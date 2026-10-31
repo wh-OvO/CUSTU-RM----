@@ -1,11 +1,29 @@
 {
-    "cmake.useCMakePresets": "always",
-    "cmake.configureOnOpen": true,
-    "cmake.generator": "Ninja",
+    // cpptools 的 IntelliSense 全关，交给 STM32 扩展自带的 clangd
+    // （两者同时开必定冲突，且 cpptools 会用 Windows 编译器解析 ARM 代码）
+    "C_Cpp.intelliSenseEngine": "disabled",
 
-    "C_Cpp.default.compilerPath": "D:/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin/arm-none-eabi-gcc.exe",
     "C_Cpp.default.intelliSenseMode": "gcc-arm",
     "C_Cpp.default.cStandard": "c17",
+
+    // 强制 CMake Tools 走 CMakePresets.json，不扫描 Kit
+    "cmake.useCMakePresets": "always",
+
+    // 以下由 STM32CubeIDE for VS Code 生成：构建与语言服务都走它自带的 bundle，
+    // 不要手改。命令行 cmake 构建不吃这些配置，评审用 CMakePresets 不受影响。
+    "cmake.cmakePath": "cube-cmake",
+    "cmake.configureArgs": [
+        "-DCMAKE_COMMAND=cube-cmake"
+    ],
+    "cmake.preferredGenerators": [
+        "Ninja"
+    ],
+    "stm32cube-ide-clangd.path": "cube",
+    "stm32cube-ide-clangd.arguments": [
+        "starm-clangd",
+        "--query-driver=${env:CUBE_BUNDLE_PATH}/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-gcc*",
+        "--query-driver=${env:CUBE_BUNDLE_PATH}/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-g++*"
+    ],
 
     "files.encoding": "utf8",
     "files.trimTrailingWhitespace": true

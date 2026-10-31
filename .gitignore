@@ -29,3 +29,8 @@ Desktop.ini
 
 # ---- CubeMX 本机缓存（含绝对路径，提交会污染别人环境）----
 .mxproject
+
+# ---- STM32CubeIDE for VS Code：本机 bundle 解析锁 ----
+# ide.store.json / bundles.store.json 要提交（它们标识“这是 STM32 项目”、锁定工具链版本）
+# 这个锁文件每次同步都会重写，提交只会制造无意义的 diff 冲突
+.settings/bundles-lock.store.json
