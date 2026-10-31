@@ -1,0 +1,31 @@
+# ---- 构建产物（不要提交）----
+build/
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.su
+*.lst
+
+# ---- 被禁止的 IDE 工程（任务书禁止项 #1）----
+MDK-ARM/
+EWARM/
+*.uvprojx
+*.uvoptx
+*.uvguix.*
+*.ewp
+*.eww
+
+# ---- 编辑器/系统文件 ----
+.vscode/ipch/
+.idea/
+*.bak
+*~
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ---- CubeMX 本机缓存（含绝对路径，提交会污染别人环境）----
+.mxproject

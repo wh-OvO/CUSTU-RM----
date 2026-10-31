@@ -1,0 +1,12 @@
+{
+    "cmake.useCMakePresets": "always",
+    "cmake.configureOnOpen": true,
+    "cmake.generator": "Ninja",
+
+    "C_Cpp.default.compilerPath": "D:/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin/arm-none-eabi-gcc.exe",
+    "C_Cpp.default.intelliSenseMode": "gcc-arm",
+    "C_Cpp.default.cStandard": "c17",
+
+    "files.encoding": "utf8",
+    "files.trimTrailingWhitespace": true
+}
