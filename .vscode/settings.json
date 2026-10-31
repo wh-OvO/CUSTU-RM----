@@ -1,28 +1,36 @@
 {
+    // ===== 语言服务 =====
     // cpptools 的 IntelliSense 全关，交给 STM32 扩展自带的 clangd
     // （两者同时开必定冲突，且 cpptools 会用 Windows 编译器解析 ARM 代码）
     "C_Cpp.intelliSenseEngine": "disabled",
-
     "C_Cpp.default.intelliSenseMode": "gcc-arm",
     "C_Cpp.default.cStandard": "c17",
 
-    // 强制 CMake Tools 走 CMakePresets.json，不扫描 Kit
+    // ===== 构建环境：统一到 STM32CubeCLT 1.22.0 =====
+    // 与命令行 `cmake --preset Debug` 用的完全是同一套，避免出现
+    // 「VS Code 编译通过、命令行编译失败」或反过来的情况
     "cmake.useCMakePresets": "always",
-
-    // 以下由 STM32CubeIDE for VS Code 生成：构建与语言服务都走它自带的 bundle，
-    // 不要手改。命令行 cmake 构建不吃这些配置，评审用 CMakePresets 不受影响。
-    "cmake.cmakePath": "cube-cmake",
-    "cmake.configureArgs": [
-        "-DCMAKE_COMMAND=cube-cmake"
-    ],
+    "cmake.cmakePath": "D:/STM32CubeCLT_1.22.0/CMake/bin/cmake.exe",
     "cmake.preferredGenerators": [
         "Ninja"
     ],
+
+    // ===== clangd =====
+    // clangd 默认拒绝向未登记的编译器索要内置宏，必须用 --query-driver 白名单。
+    // 同时登记两套 gcc：
+    //   ① CubeCLT 的 14.3.1（命令行构建用，compile_commands.json 里指向它）
+    //   ② STM32 bundle 的 14.3.1+st.2（扩展自己构建时会切到它）
+    // 少登记任何一套，红波浪线都会复现
     "stm32cube-ide-clangd.path": "cube",
     "stm32cube-ide-clangd.arguments": [
         "starm-clangd",
+        "--query-driver=D:/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin/arm-none-eabi-gcc*",
+        "--query-driver=D:/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin/arm-none-eabi-g++*",
         "--query-driver=${env:CUBE_BUNDLE_PATH}/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-gcc*",
-        "--query-driver=${env:CUBE_BUNDLE_PATH}/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-g++*"
+        "--query-driver=${env:CUBE_BUNDLE_PATH}/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-g++*",
+        "--background-index",
+        "--completion-style=detailed",
+        "--header-insertion=never"
     ],
 
     "files.encoding": "utf8",
