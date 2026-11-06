@@ -23,6 +23,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
+#include "usbd_cdc_if.h"   /* CDC_Transmit_FS()：走板载 USB 虚拟串口打日志 */
+#include "arm_pwm.h"       /* T1: arm_init() / arm_set_deg() */
+#include "arm_cfg.h"       /* T1: 标定表 g_arm_joint[] 与时基宏 */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -33,15 +36,10 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define FW_NAME          "rm_arm"
-#define FW_VERSION       "0.1.0"
+#define FW_VERSION       "0.2.0"
 
-/* --- SG90 脉宽参数（T1 会把这些搬进独立配置文件）---
- * TIM2: PSC=35 -> 72MHz/(35+1) = 2MHz，即 1 个计数 = 0.5us
- *       ARR=39999 -> (39999+1) x 0.5us = 20ms = 50Hz
- * 换算关系：CCR = 脉宽(us) x 2
- */
-#define PWM_MID_US       1500u                     /* 中位脉宽 1500us */
-#define PWM_MID_CCR      (PWM_MID_US * 2u)         /* -> CCR 3000 */
+/* 注意：脉宽 / 角度 / 时基这些数字**不在这里**，
+ * 按任务书 T1 的要求全部集中在 Core/Inc/arm_cfg.h。 */
 #define KEY_DEBOUNCE_MS  20u                       /* 按键消抖时间 */
 /* USER CODE END PD */
 
@@ -59,7 +57,9 @@ TIM_HandleTypeDef htim3;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-
+/* CubeMX 把 hUsbDeviceFS 定义在 USB_DEVICE/App/usb_device.c，
+ * 却没写进 usb_device.h，所以这里自己 extern 一次（只声明，不重复定义）。 */
+extern USBD_HandleTypeDef hUsbDeviceFS;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -76,10 +76,65 @@ static void MX_USART1_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* ---------------- printf 重定向到 USART1 ---------------- */
+/* ---------------- 日志输出：USART1 + USB CDC 双通道 ----------------
+ * 为什么两路都发：
+ *   1) USART1(PA9/PA10) 是任务书要求的"串口"，以后接 USB-TTL 模块用；
+ *   2) 板子自己的 USB 口已经配成 CDC 虚拟串口，一根 Mini-USB **数据线** 就能看，
+ *      手上没有 TTL 模块时全靠它。
+ *
+ * 关键点：任何一路没接都不能把主循环卡死
+ *   - UART 用固定短超时（没接线也只是空等，不会死锁）
+ *   - USB 只在主机真的配置好（电脑打开了这个串口）之后才发，
+ *     而且上一包没发完（USBD_BUSY）时最多等 30ms 就放弃
+ */
+
+#define LOG_BUF_SIZE   160u
+
+static char     s_log_buf[LOG_BUF_SIZE];
+static uint16_t s_log_len = 0;
+
+static void log_flush(void)
+{
+  if (s_log_len == 0u)
+  {
+    return;
+  }
+
+  /* 1) USART1：50ms 超时。115200 下一行 100 字节约 8.7ms，够用 */
+  (void)HAL_UART_Transmit(&huart1, (uint8_t *)s_log_buf, s_log_len, 50);
+
+  /* 2) USB CDC：只有电脑打开端口后才发，否则发了也是白发 */
+  if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED)
+  {
+    const uint32_t t0 = HAL_GetTick();
+    while (CDC_Transmit_FS((uint8_t *)s_log_buf, s_log_len) == USBD_BUSY)
+    {
+      if ((HAL_GetTick() - t0) > 30u)
+      {
+        break;                       /* 超时就丢这一行，绝不拖住主循环 */
+      }
+    }
+  }
+
+  s_log_len = 0u;
+}
+
+/* newlib 的 printf 最终会一个字符一个字符调到这里
+ * （链路：printf → _write() in syscalls.c → __io_putchar()） */
 int __io_putchar(int ch)
 {
-  HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+  if (s_log_len >= (LOG_BUF_SIZE - 1u))
+  {
+    log_flush();                     /* 缓冲区满，先冲出去 */
+  }
+
+  s_log_buf[s_log_len++] = (char)ch;
+
+  if (ch == '\n')
+  {
+    log_flush();                     /* 一行结束立刻发，保证及时可见 */
+  }
+
   return ch;
 }
 
@@ -98,20 +153,13 @@ static const char *reset_cause_str(void)
 /* ---------------- T0 上电自检 ---------------- */
 static void t0_setup(void)
 {
-  /* 四路 PWM 先给中位 1.5ms，避免上电瞬间舵机冲向极限 */
-  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, PWM_MID_CCR);
-  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, PWM_MID_CCR);
-  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, PWM_MID_CCR);
-  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, PWM_MID_CCR);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);
-
   /* LED 先灭（PC13 低电平点亮） */
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
 
   setvbuf(stdout, NULL, _IONBF, 0);   /* 关掉缓冲，插上串口就能看到 */
+
+  /* 四路 PWM：交给 T1 模块，脉宽/角度参数全在 arm_cfg.h */
+  arm_init();
 
   printf("\r\n==============================\r\n");
   printf(" 工程名 : %s  v%s\r\n", FW_NAME, FW_VERSION);
@@ -122,10 +170,31 @@ static void t0_setup(void)
   printf(" PCLK2  : %lu Hz\r\n", (unsigned long)HAL_RCC_GetPCLK2Freq());
   printf(" USB    : 48 MHz\r\n");
   printf(" 复位源 : %s\r\n", reset_cause_str());
-  printf(" PWM    : TIM2 CH1-4 @ 50Hz, 中位 %uus (CCR=%u)\r\n",
-         (unsigned)PWM_MID_US, (unsigned)PWM_MID_CCR);
+  printf(" PWM    : TIM2 4ch @ 50Hz, tick=%u Hz, CCR=%u~%u (中位 %u)\r\n",
+         (unsigned)ARM_PWM_TICK_HZ,
+         (unsigned)ARM_PWM_US_TO_CCR(SERVO_US_SAFE_MIN),
+         (unsigned)ARM_PWM_US_TO_CCR(SERVO_US_SAFE_MAX),
+         (unsigned)ARM_PWM_US_TO_CCR(SERVO_US_HOME));
+
+  /* 把标定表打出来，改完 arm_cfg.c 一眼能确认烧进去的是不是新值 */
+  printf(" 关节标定表 (改 Core/Src/arm_cfg.c):\r\n");
+  {
+    uint8_t j;
+    for (j = 0; j < ARM_JOINT_NUM; j++)
+    {
+      printf("   [%u] %s  %d~%d deg  home %d  %u~%u us\r\n",
+             (unsigned)j,
+             g_arm_joint[j].name,
+             (int)g_arm_joint[j].deg_min,
+             (int)g_arm_joint[j].deg_max,
+             (int)g_arm_joint[j].deg_home,
+             (unsigned)g_arm_joint[j].us_at_deg_min,
+             (unsigned)g_arm_joint[j].us_at_deg_max);
+    }
+  }
+
   printf("==============================\r\n");
-  printf("[T0] 就绪: 按 PB0 翻转 PC13 LED\r\n");
+  printf("[T1] 就绪: 四路 PWM 已输出中位；标定见 docs/T1_角度脉宽映射_说明.md\r\n");
 
   /* 打印完再清标志，否则下次读到的是被清掉的状态 */
   __HAL_RCC_CLEAR_RESET_FLAGS();

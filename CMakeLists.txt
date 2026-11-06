@@ -47,6 +47,8 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+    Core/Src/arm_cfg.c        # T1: 四个关节的标定表（标定就是改这个文件）
+    Core/Src/arm_pwm.c        # T1: 角度 → 脉宽 → CCR 的换算与输出
 )
 
 # Add include paths
