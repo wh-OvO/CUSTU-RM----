@@ -1,0 +1,9 @@
+CompileFlags:
+  # 用 CMake 导出的编译数据库（build/Debug 下）
+  CompilationDatabase: build/Debug
+  # 交叉编译头文件不在默认搜索路径里，关闭这项以减少误报
+  Add: [-Wno-unknown-warning-option]
+
+Diagnostics:
+  UnusedIncludes: None
+  MissingIncludes: None

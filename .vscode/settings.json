@@ -1,0 +1,30 @@
+{
+  // ===== STM32 工程：clangd 做 IntelliSense，cpptools 关掉 =====
+  // cpptools 会拿系统 MinGW g++ 去解析 ARM 代码，产生大量假错误，
+  // 所以这里直接把它的 IntelliSense 引擎关掉，只留 clangd。
+  "C_Cpp.intelliSenseEngine": "disabled",
+
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}/build/Debug",
+    // 允许 clangd 调用交叉编译器查询系统头文件路径（不加会报找不到 stdint.h）
+    "--query-driver=D:/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin/arm-none-eabi-*.exe",
+    "--background-index",
+    "--header-insertion=never",
+    "--fallback-style=Microsoft"
+  ],
+
+  "cmake.cmakePath": "D:/STM32CubeCLT_1.22.0/CMake/bin/cmake.exe",
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": true,
+
+  "files.associations": {
+    "*.ld": "ld",
+    "*.s": "arm",
+    "*.ioc": "ini"
+  },
+
+  "files.encoding": "utf8",
+  "files.eol": "\r\n",
+  "editor.tabSize": 2,
+  "editor.insertSpaces": true
+}
