@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include "arm_pwm.h"       /* T1: arm_init() / arm_set_deg() */
 #include "arm_cfg.h"       /* T1: 标定表 g_arm_joint[] 与时基宏 */
+#include "proto_app.h"     /* T5a: proto_app_init() / proto_app_poll() */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -270,6 +271,7 @@ int main(void)
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
   t0_setup();
+  proto_app_init();          /* T5a: 协议层就绪（先 arm_init 再初始化协议，顺序不能反） */
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -280,6 +282,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     t0_loop();
+    proto_app_poll();        /* T5a: 收支协议帧、按 50Hz 上报状态、1Hz 心跳 */
   }
   /* USER CODE END 3 */
 }

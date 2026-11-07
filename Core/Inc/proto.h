@@ -170,6 +170,16 @@ void proto_parser_reset(proto_parser_t *p);
 int proto_parser_push(proto_parser_t *p, uint8_t byte, proto_frame_t *out);
 
 /**
+  * @brief  不喂新字节，只再试着从窗口里解一帧
+  * @retval 1 = 又解出一帧；0 = 窗口里没有完整帧了
+  * @note   为什么需要它：一段数据里可能**一次躺着两帧**。
+  *         push() 每喂 1 字节最多解出 1 帧，解出第一帧后返回，
+  *         第二帧还完整地留在窗口里 —— 如果没有新字节进来，
+  *         光靠 push() 就永远取不到它。所以主循环取完缓冲后要再 pop 一次。
+  */
+int proto_parser_pop(proto_parser_t *p, proto_frame_t *out);
+
+/**
   * @brief  喂一段字节
   * @param  out      解出的帧按顺序写入这个数组
   * @param  out_cap  数组容量（帧数）

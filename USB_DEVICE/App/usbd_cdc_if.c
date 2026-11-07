@@ -22,7 +22,7 @@
 #include "usbd_cdc_if.h"
 
 /* USER CODE BEGIN INCLUDE */
-
+#include "proto_link.h"   /* T5a: 收到 USB 数据后交给协议层（本文件是唯一允许碰 CDC 的地方） */
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -259,6 +259,11 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
+  /* 先把数据搬走，再重新武装 OUT 端点。
+   * link_on_rx() 只做 memcpy 进环形缓冲，不解析、不控舵机 —— 这里跑在
+   * USB 中断里，干重活会丢包。真正的处理在主循环的 link_poll()。 */
+  link_on_rx(Buf, (uint16_t)(*Len));
+
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
   return (USBD_OK);
