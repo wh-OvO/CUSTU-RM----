@@ -51,6 +51,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     Core/Src/arm_cfg.c        # T1: 四个关节的标定表（标定就是改这个文件）
     Core/Src/arm_pwm.c        # T1: 角度 → 脉宽 → CCR 的换算与输出
+    Core/Src/proto_frame.c    # T5a: CRC8 / 组帧 / 流式解帧（纯逻辑，可 PC 上测）
 )
 
 # 任务书 2.2：「优化 Release 配置 -O2」。

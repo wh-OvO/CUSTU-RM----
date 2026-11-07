@@ -9,6 +9,10 @@ build/
 *.su
 compile_commands.json
 
+# ---- PC 端测试产物（tests/ 下的 gcc 测试程序）----
+tests/*.exe
+tests/*.obj
+
 # ---- CubeMX / IDE 本地状态（不影响复现，不进仓库）----
 .mxproject
 .settings/bundles-lock.store.json

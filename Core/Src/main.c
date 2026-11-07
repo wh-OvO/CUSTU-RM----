@@ -23,7 +23,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
-#include "usbd_cdc_if.h"   /* CDC_Transmit_FS()：走板载 USB 虚拟串口打日志 */
 #include "arm_pwm.h"       /* T1: arm_init() / arm_set_deg() */
 #include "arm_cfg.h"       /* T1: 标定表 g_arm_joint[] 与时基宏 */
 /* USER CODE END Includes */
@@ -57,9 +56,9 @@ TIM_HandleTypeDef htim3;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-/* CubeMX 把 hUsbDeviceFS 定义在 USB_DEVICE/App/usb_device.c，
- * 却没写进 usb_device.h，所以这里自己 extern 一次（只声明，不重复定义）。 */
-extern USBD_HandleTypeDef hUsbDeviceFS;
+/* main.c 刻意**不**声明 hUsbDeviceFS：
+ * CDC 端点归协议层独占（proto_link.c），这里连指针都拿不到，
+ * 一旦手滑写了 CDC 调用就变成编译错误，而不是运行时的隐性污染。 */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -76,16 +75,21 @@ static void MX_USART1_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* ---------------- 日志输出：USART1 + USB CDC 双通道 ----------------
- * 为什么两路都发：
- *   1) USART1(PA9/PA10) 是任务书要求的"串口"，以后接 USB-TTL 模块用；
- *   2) 板子自己的 USB 口已经配成 CDC 虚拟串口，一根 Mini-USB **数据线** 就能看，
- *      手上没有 TTL 模块时全靠它。
+/* ---------------- 日志输出：**只走 USART1** ----------------
+ * ⚠️ 绝对不要把日志写进 USB CDC。
  *
- * 关键点：任何一路没接都不能把主循环卡死
- *   - UART 用固定短超时（没接线也只是空等，不会死锁）
- *   - USB 只在主机真的配置好（电脑打开了这个串口）之后才发，
- *     而且上一包没发完（USBD_BUSY）时最多等 30ms 就放弃
+ * 原因：CDC 是给上位机的**协议字节流**，上位机按帧头 0xA5 同步、按长度字段切包。
+ * 一旦掺进任何文本：
+ *     A5 10 13 84 03 ... 5B 54 31 5D ...     ← "[T1]" 混进帧中间
+ *     长度字段声明 19 字节，凑齐后 CRC 必然不符
+ *     → 上位机丢 1 字节重新同步 → 帧视图标红 → 丢帧统计暴涨
+ *
+ * 规则：**一个端点只能有一个主人**。
+ *   CDC 端点由协议层独占（proto_link.c），日志只走 USART1 —— 物理上是另一根线，
+ *   怎么打都不会碰到协议字节流。
+ *
+ * 代价：手上没有 USB-TTL 时看不到这些输出。这是有意的取舍：
+ *       调试信息看不到可以忍，协议被污染不行。
  */
 
 #define LOG_BUF_SIZE   160u
@@ -100,21 +104,8 @@ static void log_flush(void)
     return;
   }
 
-  /* 1) USART1：50ms 超时。115200 下一行 100 字节约 8.7ms，够用 */
+  /* 50ms 超时：115200 下一行 100 字节约 8.7ms；没接线也只是空等，不会死锁 */
   (void)HAL_UART_Transmit(&huart1, (uint8_t *)s_log_buf, s_log_len, 50);
-
-  /* 2) USB CDC：只有电脑打开端口后才发，否则发了也是白发 */
-  if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED)
-  {
-    const uint32_t t0 = HAL_GetTick();
-    while (CDC_Transmit_FS((uint8_t *)s_log_buf, s_log_len) == USBD_BUSY)
-    {
-      if ((HAL_GetTick() - t0) > 30u)
-      {
-        break;                       /* 超时就丢这一行，绝不拖住主循环 */
-      }
-    }
-  }
 
   s_log_len = 0u;
 }
