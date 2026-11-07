@@ -8,7 +8,9 @@ cmake_minimum_required(VERSION 3.22)
 #
 
 # Setup compiler settings
-set(CMAKE_C_STANDARD 11)
+# 任务书 2.2「构建要求」明确：C 标准 C17（CMAKE_C_STANDARD 17）。
+# CubeMX 默认写的是 11，这里按任务书改掉。C_EXTENSIONS ON 会得到 -std=gnu17。
+set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 
@@ -49,6 +51,15 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     Core/Src/arm_cfg.c        # T1: 四个关节的标定表（标定就是改这个文件）
     Core/Src/arm_pwm.c        # T1: 角度 → 脉宽 → CCR 的换算与输出
+)
+
+# 任务书 2.2：「优化 Release 配置 -O2」。
+# 注意不能去改 cmake/gcc-arm-none-eabi.cmake —— 任务书明令该文件
+# 「由 CubeMX 生成，不得手改」，而且每次 GENERATE CODE 都会被覆盖。
+# CubeMX 默认给 Release 的是 -Os，这里用 target 级选项补一个 -O2：
+# gcc 命令行上后出现的 -O 会覆盖前面的 -O。
+target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
+    $<$<CONFIG:Release>:-O2>
 )
 
 # Add include paths
