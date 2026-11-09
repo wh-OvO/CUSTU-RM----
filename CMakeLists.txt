@@ -51,6 +51,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     Core/Src/arm_cfg.c        # T1: 四个关节的标定表（标定就是改这个文件）
     Core/Src/arm_pwm.c        # T1: 角度 → 脉宽 → CCR 的换算与输出
+    Core/Src/arm_joint.c      # T2: 关节执行层（底座闭环 / 其余三路直通）
+    Core/Src/as5600.c         # T2: 底座角度反馈（AS5600 磁编码器；硬件未到，先占位）
     Core/Src/proto_frame.c    # T5a: CRC8 / 组帧 / 流式解帧（纯逻辑，可 PC 上测）
     Core/Src/proto_link.c     # T5a: CDC 独占出入口（环形缓冲 + 单帧发送）
     Core/Src/proto_app.c      # T5a: 0x10 上报 + 0x20/21/22/23/24 处理

@@ -52,6 +52,15 @@ extern "C" {
 #define PROTO_T_HEARTBEAT      0x23u   /* 心跳       双向          1Hz   */
 #define PROTO_T_VERSION        0x24u   /* 版本查询   双向          连接时 */
 
+/* ---- 调试扩展帧（v1.1 扩展，不在任务书 0x10~0x24 的必做范围内）----
+ * 为什么需要：标定要"从 500 扫到 2500µs，看舵机停在哪个脉宽"。
+ * 没有这两帧，每试一个值就得改代码 → 编译 → 烧录，四只舵机几百个点，不现实。
+ * 有了它们，上位机调试页按 ±1µs 点，改完立刻生效。
+ * 少了这两帧不影响验收（必做项只有 0x10~0x24），只是标定会很痛苦。
+ */
+#define PROTO_T_PULSE_SET      0x31u   /* 单路脉宽设定 上位机 → 设备  4B */
+#define PROTO_T_PULSE_GET      0x32u   /* 脉宽回读     双向  query 1B / reply 9B */
+
 /* 各消息的载荷长度（正本 §4.2~§4.7） */
 #define PROTO_LEN_STATUS       19u
 #define PROTO_LEN_TARGET       11u
@@ -59,6 +68,11 @@ extern "C" {
 #define PROTO_LEN_ESTOP         1u
 #define PROTO_LEN_HEARTBEAT     1u
 #define PROTO_LEN_VERSION       2u
+
+/* 0x31 / 0x32 的载荷长度 */
+#define PROTO_LEN_PULSE_SET     4u    /* servo(u8) + pulse(u16) + flags(u8) */
+#define PROTO_LEN_PULSE_QUERY   1u    /* 内容无所谓，用 0x01 表示"请回读" */
+#define PROTO_LEN_PULSE_REPLY   9u    /* p0..p3(u16) + status(u8) */
 
 /* ==========================================================================
  * 三、0x21 模式（正本 §4.4）
@@ -74,6 +88,23 @@ extern "C" {
  * ========================================================================== */
 
 #define PROTO_ESTOP_ON         1u   /* 1 = 急停；0 = 保留 */
+
+/* ==========================================================================
+ * 四之二、0x31 / 0x32 调试帧参数（v1.1 扩展）
+ * ========================================================================== */
+
+#define PROTO_PULSE_MIN        500u    /* µs，协议文档规定的脉宽范围（钳位统一在 arm_pwm.c 做） */
+#define PROTO_PULSE_MAX       2500u    /* µs，同上 */
+
+/* 0x31 的 flags 字节 */
+#define PROTO_PULSE_FLAG_EN    0x01u   /* bit0 输出使能：0 = 停该通道（舵机卸力） */
+#define PROTO_PULSE_FLAG_HOLD  0x02u   /* bit1 其余舵机保持：本工程无条件满足，见 proto_app.c */
+
+/* 0x32 应答的 status 字节。
+ * ⚠️ 这是 **0x32 自己的**状态字节，和 0x10 里的 status（§4.2）完全无关，
+ *    bit 定义也不同，不要混着看。 */
+#define PROTO_DBG_ACTIVE       0x01u   /* bit0 调试中（最近用过 0x31） */
+#define PROTO_DBG_FAULT        0x02u   /* bit1 故障态（急停中，0x31 会被拒绝） */
 
 /* ==========================================================================
  * 五、0x10 状态位（正本 §4.2）

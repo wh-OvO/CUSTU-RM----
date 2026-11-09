@@ -1,0 +1,37 @@
+{
+  // ==========================================================================
+  //  VS Code 调试配置（ST-Link / SWD）
+  //
+  //  用法：打开 rm_arm 工程 → 左侧「运行和调试」面板（Ctrl+Shift+D）
+  //        → 顶部下拉选 "STM32 调试 (ST-Link)" → 按 F5
+  //
+  //  依赖：扩展 stmicroelectronics.stm32cube-ide-debug-stlink-gdbserver
+  //        （提供 type = "stlinkgdbtarget"，已装 v1.5.1）
+  //
+  //  ⚠️ 三个必须知道的点：
+  //   1) 调试会**独占 SWD**。调试期间不能再跑 STM32_Programmer_CLI 烧录，
+  //      会报 "Error: failed to connect"。要先停止调试（Shift+F5）。
+  //   2) 按 F5 **不会自动重新编译**。改了代码要先 build（Ctrl+Shift+B 或
+  //      CMake Tools 的 Build 按钮），否则你调试的是旧固件 —— 断点位置全部错位，
+  //      而且这种错位极难发现。
+  //   3) 板子上电顺序不变：先共地、再舵机上电、最后主控上电。
+  // ==========================================================================
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "STM32 调试 (ST-Link)",
+      "type": "stlinkgdbtarget",
+      "request": "launch",
+
+      // 工作目录：${workspaceFolder} 就是 rm_arm 根目录
+      "cwd": "${workspaceFolder}",
+
+      // 要下载并调试的 ELF。写成字面路径，不依赖 CMake Tools 的"启动目标"设置，
+      // 免得换了 preset 就找不到文件。
+      "executable": "${workspaceFolder}/build/Debug/rm_arm.elf",
+
+      // 下载完先停到 main()，而不是一上来就跑飞
+      "runToEntryPoint": "main"
+    }
+  ]
+}

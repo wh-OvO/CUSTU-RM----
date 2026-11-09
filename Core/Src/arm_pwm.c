@@ -12,7 +12,7 @@
   *                    + (deg - deg_min) × (us_at_deg_max - us_at_deg_min)
   *                                       ÷ (deg_max - deg_min)
   *
-  *            ③ 脉宽夹进安全窗 [SERVO_US_SAFE_MIN, SERVO_US_SAFE_MAX]
+  *            ③ 脉宽夹进舵机可接受范围 [SERVO_US_NOMINAL_MIN, SERVO_US_NOMINAL_MAX]
   *               再乘 ARM_PWM_TICKS_PER_US 得到 CCR
   *
   *          公式里刻意用 int32 做中间量、最后才转 uint16：
@@ -57,7 +57,7 @@ void arm_init(void)
    * 舵机会抖一下甚至冲向极限。 */
   for (j = 0; j < ARM_JOINT_NUM; j++)
   {
-    arm_write_ccr(j, ARM_PWM_US_TO_CCR(SERVO_US_HOME));
+    arm_write_ccr(j/*#语法糖标签#*/, ARM_PWM_US_TO_CCR(SERVO_US_HOME));
   }
 
   /* 第二步：启动四个通道 */
@@ -105,9 +105,11 @@ uint16_t arm_deg_to_us(uint8_t joint, float deg)
        + (int32_t)(((float)span_us / (float)span_deg) * (deg - (float)c->deg_min));
   }
 
-  /* ③ 夹进舵机安全窗：标定表填错也不会把舵机顶到堵转 */
-  if (us < (int32_t)SERVO_US_SAFE_MIN) { us = (int32_t)SERVO_US_SAFE_MIN; }
-  if (us > (int32_t)SERVO_US_SAFE_MAX) { us = (int32_t)SERVO_US_SAFE_MAX; }
+  /* ③ 夹进舵机可接受范围。正常情况下这一步是空操作：
+   *    角度已经夹在 [deg_min, deg_max] 内，插值结果必然落在标定表两端点之间。
+   *    留着它只防一种情况：标定表里填了 3000 这种超出舵机手册的值。 */
+  if (us < (int32_t)SERVO_US_NOMINAL_MIN) { us = (int32_t)SERVO_US_NOMINAL_MIN; }
+  if (us > (int32_t)SERVO_US_NOMINAL_MAX) { us = (int32_t)SERVO_US_NOMINAL_MAX; }
 
   return (uint16_t)us;
 }
@@ -141,9 +143,10 @@ void arm_set_us(uint8_t joint, uint16_t us)
   {
     return;
   }
-  /* 同样夹安全窗，标定时乱填也不会烧舵机 */
-  if (us < SERVO_US_SAFE_MIN) { us = SERVO_US_SAFE_MIN; }
-  if (us > SERVO_US_SAFE_MAX) { us = SERVO_US_SAFE_MAX; }
+  /* 同样夹舵机可接受范围，乱填也不会烧舵机（但挡不住"顶到机械限位"，
+   * 那要靠标定表把端点留在机械限位内侧 40~50µs） */
+  if (us < SERVO_US_NOMINAL_MIN) { us = SERVO_US_NOMINAL_MIN; }
+  if (us > SERVO_US_NOMINAL_MAX) { us = SERVO_US_NOMINAL_MAX; }
 
   arm_write_ccr(joint, ARM_PWM_US_TO_CCR(us));
 }
@@ -178,4 +181,45 @@ float arm_get_deg(uint8_t joint)
   if (deg > (float)c->deg_max) { deg = (float)c->deg_max; }
 
   return deg;
+}
+
+/* ==========================================================================
+ * 调试接口（对应上位机 0x31 / 0x32 调试帧）
+ * ========================================================================== */
+
+/* ------------------------------------------------------------------------- */
+/* 读回当前脉宽（µs）                                                         */
+/* ------------------------------------------------------------------------- */
+uint16_t arm_get_us(uint8_t joint)
+{
+  if (joint >= ARM_JOINT_NUM)
+  {
+    return 0u;
+  }
+
+  /* 直接读比较寄存器再换算回 µs —— 读的是芯片里的真实值，
+   * 不是软件缓存的"我以为写进去的值"。这样上位机看到的就是硬件现状。 */
+  const uint16_t ccr = (uint16_t)__HAL_TIM_GET_COMPARE(&htim2, s_channel[joint]);
+
+  return ARM_PWM_CCR_TO_US(ccr);
+}
+
+/* ------------------------------------------------------------------------- */
+/* 开/关单路 PWM 输出                                                         */
+/* ------------------------------------------------------------------------- */
+void arm_output_enable(uint8_t joint, uint8_t enable)
+{
+  if (joint >= ARM_JOINT_NUM)
+  {
+    return;
+  }
+
+  if (enable != 0u)
+  {
+    (void)HAL_TIM_PWM_Start(&htim2, s_channel[joint]);
+  }
+  else
+  {
+    (void)HAL_TIM_PWM_Stop(&htim2, s_channel[joint]);
+  }
 }

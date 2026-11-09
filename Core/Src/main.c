@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include "arm_pwm.h"       /* T1: arm_init() / arm_set_deg() */
+#include "arm_joint.h"     /* T2: arm_joint_init() / 关节执行层（底座闭环） */
 #include "arm_cfg.h"       /* T1: 标定表 g_arm_joint[] 与时基宏 */
 #include "proto_app.h"     /* T5a: proto_app_init() / proto_app_poll() */
 /* USER CODE END Includes */
@@ -142,16 +143,20 @@ static const char *reset_cause_str(void)
   return "未识别";
 }
 
-/* ---------------- T0 上电自检 ---------------- */
-static void t0_setup(void)
+/* ---------------- 启动横幅 ----------------
+ * 打两次：① 上电时（此时 USB 可能还没枚举完，走 CDC 的那份会丢）
+ *         ② USB 被电脑配置好之后补发一次（见 log_usb_poll）
+ * 所以"复位原因"必须缓存：清标志发生在第一次打印之后，
+ * 第二次再读就变成"未识别"了。
+ */
+static const char *s_reset_cause = NULL;
+
+static void print_banner(void)
 {
-  /* LED 先灭（PC13 低电平点亮） */
-  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
-
-  setvbuf(stdout, NULL, _IONBF, 0);   /* 关掉缓冲，插上串口就能看到 */
-
-  /* 四路 PWM：交给 T1 模块，脉宽/角度参数全在 arm_cfg.h */
-  arm_init();
+  if (s_reset_cause == NULL)
+  {
+    s_reset_cause = reset_cause_str();   /* 只在第一次真正读标志位 */
+  }
 
   printf("\r\n==============================\r\n");
   printf(" 工程名 : %s  v%s\r\n", FW_NAME, FW_VERSION);
@@ -161,11 +166,11 @@ static void t0_setup(void)
   printf(" PCLK1  : %lu Hz\r\n", (unsigned long)HAL_RCC_GetPCLK1Freq());
   printf(" PCLK2  : %lu Hz\r\n", (unsigned long)HAL_RCC_GetPCLK2Freq());
   printf(" USB    : 48 MHz\r\n");
-  printf(" 复位源 : %s\r\n", reset_cause_str());
+  printf(" 复位源 : %s\r\n", s_reset_cause);
   printf(" PWM    : TIM2 4ch @ 50Hz, tick=%u Hz, CCR=%u~%u (中位 %u)\r\n",
          (unsigned)ARM_PWM_TICK_HZ,
-         (unsigned)ARM_PWM_US_TO_CCR(SERVO_US_SAFE_MIN),
-         (unsigned)ARM_PWM_US_TO_CCR(SERVO_US_SAFE_MAX),
+         (unsigned)ARM_PWM_US_TO_CCR(SERVO_US_NOMINAL_MIN),
+         (unsigned)ARM_PWM_US_TO_CCR(SERVO_US_NOMINAL_MAX),
          (unsigned)ARM_PWM_US_TO_CCR(SERVO_US_HOME));
 
   /* 把标定表打出来，改完 arm_cfg.c 一眼能确认烧进去的是不是新值 */
@@ -187,10 +192,33 @@ static void t0_setup(void)
 
   printf("==============================\r\n");
   printf("[T1] 就绪: 四路 PWM 已输出中位；标定见 docs/T1_角度脉宽映射_说明.md\r\n");
+}
+
+/* ---------------- T0 上电自检 ---------------- */
+static void t0_setup(void)
+{
+  /* LED 先灭（PC13 低电平点亮） */
+  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+
+  setvbuf(stdout, NULL, _IONBF, 0);   /* 关掉缓冲，插上串口就能看到 */
+
+  /* 四路 PWM：交给 T1 模块，脉宽/角度参数全在 arm_cfg.h */
+  arm_init();
+
+  /* 关节执行层：决定哪个关节走闭环（底座 360°）、哪个直通。
+   * 必须在 arm_init() 之后 —— 它内部要往 CCR 写零位脉宽。 */
+  arm_joint_init();
+
+  print_banner();
 
   /* 打印完再清标志，否则下次读到的是被清掉的状态 */
   __HAL_RCC_CLEAR_RESET_FLAGS();
 }
+
+/* ---------------- USB 配置完成检测 ----------------
+ * 说明：这里**不**碰 CDC。日志只走 USART1（见文件头 log_flush 的注释），
+ *       所以不存在"USB 连上后补发横幅"这回事 —— 想看得接 USB-TTL。
+ */
 
 /* ---------------- 20ms 消抖按键：返回 1 = 刚按下 ---------------- */
 static uint8_t key_scan(void)
@@ -262,7 +290,7 @@ int main(void)
 
   /* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals */
+  /* Initialize all configured peripherals *///初始化外设
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
@@ -589,3 +617,10 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
+/*
+  24–75	  Includes / 宏 / 全局	                                              我们
+  77–240	log_flush __io_putchar reset_cause_str t0_setup key_scan t0_loop	 我们
+  242–290	main()	                                            CubeMX 骨架 + 我们两行
+  292–556	MX_GPIO_Init 等 6 个初始化函数	                                CubeMX 生成
+  557–591	USER CODE 4 + Error_Handler	                                      混
+*/

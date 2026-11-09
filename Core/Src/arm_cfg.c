@@ -3,19 +3,22 @@
   * @file    arm_cfg.c
   * @brief   四个关节的标定表 —— **标定就是改这个文件里的数**
   ******************************************************************************
-  * @note    标定流程（没有示波器也能做，见 docs/T1_角度脉宽映射_说明.md）：
+  * @note    标定流程（没有示波器也能做，见 docs/调试帧_0x31_0x32_标定说明.md）：
   *
-  *          1) 先把 us_at_deg_min / us_at_deg_max 都填 SERVO_US_SAFE_MIN / MAX，
+  *          1) 先把 us_at_deg_min / us_at_deg_max 临时填成 500 / 2500，
   *             上电看舵机转不转、有没有顶死异响。
-  *          2) 用 arm_set_us() 直接给脉宽，从 1500 开始每次 ±50µs，
+  *          2) 用上位机调试页（0x31 帧）直接给脉宽，从 1500 开始每次 ±50µs，
   *             直到舵机**刚好**走到机械端点、但不卡不响，记下这两个 µs 值。
-  *          3) 把这两个值填进 us_at_deg_min / us_at_deg_max。
+  *             上位机上按一次按钮就生效，不用改代码重烧。
+  *          3) 把这两个值**各往回收 40~50µs**，再填进 us_at_deg_min / us_at_deg_max。
+  *             留余量是因为工程里已经没有"安全窗"兜底了（2026-11-09 删掉），
+  *             这张表就是唯一的防线：端点贴着机械限位，温度一变就可能顶死。
   *          4) 量一下这两个端点之间实际转了多少度，填进 deg_min / deg_max。
   *             懒得量就按 180° 填，先跑通再精修。
   *
   * @warning 下面表格里的数值是**出厂占位值**，不是标定结果。
-  *          第一次上电前请确认 SERVO_US_SAFE_MIN/MAX 是 600/2400，
-  *          这能保证就算表格写错，舵机也不会被顶到堵转。
+  *          第一次上电前记得按上面第 1 步改成 500/2500 先探路 ——
+  *          占位值 600/2400 虽然保守，但它和真实行程没有任何关系。
   ******************************************************************************
   */
 
@@ -38,16 +41,28 @@
 const arm_joint_cfg_t g_arm_joint[ARM_JOINT_NUM] =
 {
   /* ---- J1 底座回转（PA0 / TIM2_CH1）----------------------------------
-   * 一般行程最大，装好后左右各能转 90° 左右；
-   * 如果转到某个方向会撞到底座，把 deg_min / deg_max 收窄。
+   * **唯一的特殊关节：按学长方案是 360° 连续旋转舵机。**
+   *
+   * 现在填的是 .kind = ARM_JOINT_POS —— 因为 360° 舵机和 AS5600 都还没到，
+   * 手头只有普通 180° SG90，所以先当位置型跑，这样整个工程能立即编译验证。
+   *
+   * >>> 360° 舵机 + AS5600 到货后，只改下面三处： <<<
+   *     1. .kind       = ARM_JOINT_VEL
+   *     2. .deg_min    = -180   .deg_max = 180   .deg_home = 0
+   *     3. .us_stop / .us_per_dps 按标定填（见 docs 里的连续舵机标定流程）
+   *   再把 as5600.c 里的占位实现换成真的 I²C 读取。
+   *   arm_joint.c 一行都不用动。
    */
   {
     .name           = "J1 底座",
+    .kind           = ARM_JOINT_POS,   /* ← 360° 舵机到货后改 ARM_JOINT_VEL */
     .deg_min        = 0,
     .deg_max        = 180,
     .deg_home       = 90,
     .us_at_deg_min  = 600,      /* ← 标定后改这里 */
     .us_at_deg_max  = 2400,     /* ← 标定后改这里 */
+    .us_stop        = 0,        /* ← 仅 VEL 用：零速脉宽，标定后填 1500 附近的值 */
+    .us_per_dps     = 0.0f,     /* ← 仅 VEL 用：每 °/s 需要多少 µs */
   },
 
   /* ---- J2 大臂（PA1 / TIM2_CH2）--------------------------------------
@@ -55,11 +70,14 @@ const arm_joint_cfg_t g_arm_joint[ARM_JOINT_NUM] =
    */
   {
     .name           = "J2 大臂",
+    .kind           = ARM_JOINT_POS,
     .deg_min        = 0,
     .deg_max        = 180,
     .deg_home       = 90,
     .us_at_deg_min  = 600,      /* ← 标定后改这里 */
     .us_at_deg_max  = 2400,     /* ← 标定后改这里 */
+    .us_stop        = 0,
+    .us_per_dps     = 0.0f,
   },
 
   /* ---- J3 小臂（PA2 / TIM2_CH3）--------------------------------------
@@ -68,11 +86,14 @@ const arm_joint_cfg_t g_arm_joint[ARM_JOINT_NUM] =
    */
   {
     .name           = "J3 小臂",
+    .kind           = ARM_JOINT_POS,
     .deg_min        = 0,
     .deg_max        = 180,
     .deg_home       = 90,
     .us_at_deg_min  = 600,      /* ← 标定后改这里 */
     .us_at_deg_max  = 2400,     /* ← 标定后改这里 */
+    .us_stop        = 0,
+    .us_per_dps     = 0.0f,
   },
 
   /* ---- J4 夹爪（PA3 / TIM2_CH4）--------------------------------------
@@ -81,10 +102,13 @@ const arm_joint_cfg_t g_arm_joint[ARM_JOINT_NUM] =
    */
   {
     .name           = "J4 夹爪",
+    .kind           = ARM_JOINT_POS,
     .deg_min        = 0,
     .deg_max        = 60,
     .deg_home       = 30,
     .us_at_deg_min  = 600,      /* ← 标定后改这里 */
     .us_at_deg_max  = 2400,     /* ← 标定后改这里 */
+    .us_stop        = 0,
+    .us_per_dps     = 0.0f,
   },
 };
