@@ -94,9 +94,9 @@ static uint8_t  s_boot_home_active;         /* 1 = 自动回零进行中 */
 
 /* ---- T3：越界钳位 ----
  * 语义是"最近一条指令有没有越界"，**每条指令重算一次**，不是攒着的报警。
- * 所以：下一条合法指令到达 → 自动清 0；不需要人工复位。
- * 越界了照样执行，只是执行的是**钳位后**的边界值。 */
-static uint8_t  s_limit_hit;                /* 1 = 已钳位（→ status bit6） */
+ * 清除途径有两条：下一条完全合法的指令到达 → 自动清 0；或发 0x21=3 强制清。
+ * 越界了照样执行，只是执行的是**钳位后**的边界值（不冻结）。 */
+static uint8_t  s_limit_hit;                /* 1 = 已钳位（→ status bit2） */
 
 /* ---- 时间戳 ---- */
 static uint32_t s_ms_target_rx;
@@ -180,7 +180,10 @@ uint8_t proto_app_status(void)
   }
   if (s_limit_hit != 0u)
   {
-    st |= PROTO_ST_LIMIT;                      /* bit6 越界已钳位（本工程扩展位） */
+    /* 越界复用 bit2 故障位（依据见 proto.h 里 PROTO_ST_RESERVED 上方的说明）。
+     * 注意这里**只置位，不冻结** —— s_fault 仍是 0，move_start() 不会被挡，
+     * 手臂照钳位后的边界值正常走完。 */
+    st |= PROTO_ST_FAULT;                      /* bit2 故障态（含越界） */
   }
 
   return (uint8_t)(st & (uint8_t)~PROTO_ST_RESERVED);   /* bit6~7 必须为 0 */
@@ -422,6 +425,8 @@ static void on_mode(const proto_frame_t *fr)
        * 自动置位/清除（插回去就恢复），因为 I²C 掉线不是"急停"，不该要求
        * 人工解锁；但恢复后同样不会自己动，要等新的 0x20。 */
       s_fault = 0u;
+      s_limit_hit = 0u;              /* 越界标志也一起清：它现在挂在 bit2 上，
+                                      * 不清的话清完故障 bit2 还亮着，用户会以为没清掉 */
       s_mode  = PROTO_MODE_MANUAL;
       break;
 
