@@ -36,6 +36,7 @@
 #include "arm_cfg.h"
 #include "arm_pwm.h"
 #include "arm_joint.h"      /* T2: 关节执行层（底座闭环 / 其余直通） */
+#include "mpu6050.h"        /* T4: 姿态传感器（pitch / 0x30 / 0x33） */
 
 /* ---- 时间参数 ---- */
 #define APP_REPORT_MS        20u     /* 状态帧周期：20ms = 50Hz（正本要求 20~50Hz） */
@@ -69,8 +70,9 @@
 /* ---- 协议层 ---- */
 static int16_t  s_tgt_x10[ARM_JOINT_NUM];   /* 目标角，单位 0.1° */
 static uint8_t  s_mode;                     /* PROTO_MODE_xxx */
-static uint8_t  s_fault;                    /* 故障态（急停） */
-static uint8_t  s_i2c_fail;                 /* T4 的 MPU6050 会写它；底座那路在 arm_joint 内部 */
+static uint8_t  s_fault;                    /* 故障态（急停），只能 0x21=3 清 */
+static uint8_t  s_sensor_fault;             /* T4: MPU6050 丢线/故障（与急停分开，可自恢复） */
+static uint8_t  s_i2c_fail;                 /* T4: 当前传感器失效（写进 bit4；底座那路在 arm_joint 内部） */
 static uint8_t  s_to_target;                /* 0x20 超时 */
 static uint8_t  s_to_hb;                    /* 心跳超时 */
 
@@ -141,9 +143,9 @@ uint8_t proto_app_status(void)
   {
     st |= PROTO_ST_HOMING;                     /* bit1 正在回零 */
   }
-  if (s_fault != 0u)
+  if ((s_fault != 0u) || (s_sensor_fault != 0u))
   {
-    st |= PROTO_ST_FAULT;                      /* bit2 故障态 */
+    st |= PROTO_ST_FAULT;                      /* bit2 故障态（急停 / 传感器丢失） */
   }
   /* bit3：插补没走完，**或者**底座闭环还没收敛。
    * 这两件事必须分开判 —— 插补走完（s_moving 清零）不代表真到位，
@@ -183,8 +185,11 @@ static void send_status(uint32_t now)
     put_i16(&pl[8u + (uint16_t)j * 2u], s_tgt_x10[j]);
   }
 
-  /* 正本 §4.2：pitch 无传感器时填 0。T4 接了 MPU6050 再改这里 */
-  put_i16(&pl[16], 0);
+  /* 正本 §4.2：pitch 是"末端实测俯仰角"，无传感器时填 0。
+   * T4：MPU6050 装在末端/小臂上，这里填加速度算出的**绝对倾角**（0.1°）。
+   * 注意判 healthy：传感器丢了就填 0，不要拿最后一次缓存值硬撑 ——
+   * 否则上位机会以为姿态还在，而实际上那已经是几百毫秒前的旧值了。 */
+  put_i16(&pl[16], (mpu6050_healthy() != 0u) ? to_x10(mpu6050_pitch_deg()) : 0);
   pl[18] = proto_app_status();
 
   (void)now;
@@ -208,7 +213,7 @@ static void move_start(uint16_t dur_ms)
 {
   uint8_t j;
 
-  if (s_fault != 0u)
+  if ((s_fault != 0u) || (s_sensor_fault != 0u))
   {
     return;                          /* 故障态：不接受新动作（见文件头取舍 2）*/
   }
@@ -355,7 +360,11 @@ static void on_mode(const proto_frame_t *fr)
 
     case PROTO_MODE_CLEAR_FAULT:
       /* 正本 §4.5：急停后**唯一**的复位途径。
-       * 复位后回到手动模式，需要再收 0x21=1 才进自动 —— 防止一解锁就自己动。 */
+       * 复位后回到手动模式，需要再收 0x21=1 才进自动 —— 防止一解锁就自己动。
+       *
+       * T4 的传感器故障**不在这里清**：它由 mpu6050_tick() 按"能不能读到数"
+       * 自动置位/清除（插回去就恢复），因为 I²C 掉线不是"急停"，不该要求
+       * 人工解锁；但恢复后同样不会自己动，要等新的 0x20。 */
       s_fault = 0u;
       s_mode  = PROTO_MODE_MANUAL;
       break;
@@ -431,8 +440,10 @@ static void on_pulse_set(const proto_frame_t *fr)
   /* ① 故障态下**拒绝**调试写入。
    * 这是安全边界：急停的语义是"谁都别再动"。如果 0x31 能绕过去，
    * 急停就成了摆设 —— 一个上位机 bug 就能把手臂一路捅到极限。
-   * 要恢复先发 0x21 = 3 清故障。 */
-  if (s_fault != 0u)
+   * 传感器故障同样拒绝：T4 要求"传感器失效 → 1 秒内停止输出"，
+   * 如果 0x31 还能写脉宽，这条安全要求就绕过去了。
+   * 要恢复先发 0x21 = 3 清故障（传感器故障则等它自己恢复）。 */
+  if ((s_fault != 0u) || (s_sensor_fault != 0u))
   {
     return;
   }
@@ -489,11 +500,121 @@ static void on_pulse_get(const proto_frame_t *fr)
   }
 
   if (s_dbg != 0u)   { st |= PROTO_DBG_ACTIVE; }
-  if (s_fault != 0u) { st |= PROTO_DBG_FAULT; }
+  if ((s_fault != 0u) || (s_sensor_fault != 0u)) { st |= PROTO_DBG_FAULT; }
 
   pl[8] = st;
 
   (void)link_send_frame(PROTO_T_PULSE_GET, pl, PROTO_LEN_PULSE_REPLY);
+}
+
+/* ------------------------------------------------------------------------- */
+/* 0x30 传感器原始数据（查询 → 应答）                                         */
+/* ------------------------------------------------------------------------- */
+static void on_sensor_raw(const proto_frame_t *fr)
+{
+  uint8_t          pl[PROTO_LEN_SENSOR_REPLY];
+  mpu6050_sample_t s;
+  uint8_t          st = 0u;
+  uint8_t          valid;
+
+  if (fr->len != PROTO_LEN_SENSOR_QUERY)
+  {
+    return;                          /* 查询帧长度必须是 1 */
+  }
+
+  /* 没数据时 s 是全 0（驱动里 memset 过），回 0 比回垃圾值诚实。
+   * bit0 用这次读取的返回值，不用 healthy() —— 刚唤醒的 50ms 里
+   * healthy() 已经是 1，但还没有有效样本。 */
+  valid = mpu6050_get_sample(&s);
+
+  /* 载荷：6×int16 原始计数 + temp + pitch(0.1°) + status */
+  put_i16(&pl[0],  s.ax);
+  put_i16(&pl[2],  s.ay);
+  put_i16(&pl[4],  s.az);
+  put_i16(&pl[6],  s.gx);
+  put_i16(&pl[8],  s.gy);
+  put_i16(&pl[10], s.gz);
+  put_i16(&pl[12], s.temp);
+  put_i16(&pl[14], to_x10(s.pitch_deg));
+
+  if (valid != 0u)                                 { st |= PROTO_SENSOR_ST_OK; }
+  if (mpu6050_calib_state() == MPU6050_CAL_RUNNING){ st |= PROTO_SENSOR_ST_CALIB; }
+  if (mpu6050_faulted() != 0u)                    { st |= PROTO_SENSOR_ST_FAULT; }
+  if (mpu6050_calib_state() == MPU6050_CAL_DONE)  { st |= PROTO_SENSOR_ST_CALIBRATED; }
+  pl[16] = st;
+
+  (void)link_send_frame(PROTO_T_SENSOR_RAW, pl, PROTO_LEN_SENSOR_REPLY);
+}
+
+/* ------------------------------------------------------------------------- */
+/* 0x33 陀螺零偏标定（命令 → 应答）                                           */
+/* ------------------------------------------------------------------------- */
+static void on_gyro_calib(const proto_frame_t *fr)
+{
+  uint8_t pl[PROTO_LEN_CALIB_REPLY];
+  uint8_t state;
+  uint8_t reason;
+  uint8_t cmd;
+  float   bx = 0.0f;
+  float   by = 0.0f;
+  float   bz = 0.0f;
+
+  if (fr->len != PROTO_LEN_CALIB_CMD)
+  {
+    return;
+  }
+
+  cmd    = fr->payload[0];
+  state  = mpu6050_calib_state();
+  reason = mpu6050_calib_reason();
+
+  if (cmd == PROTO_CALIB_START)
+  {
+    /* 两个前置条件：
+     *   ① 传感器在线 —— 不在线时采不到数，直接回 NO_SENSOR；
+     *   ② 机械臂静止 —— 动着采 5 秒，采到的是"运动 + 零偏"，标了比不标更糟。 */
+    if (mpu6050_healthy() == 0u)
+    {
+      state  = PROTO_CALIB_ERROR;
+      reason = PROTO_CALIB_R_NO_SENSOR;
+    }
+    else if ((s_moving != 0u) || (arm_joint_moving() != 0u))
+    {
+      state  = PROTO_CALIB_ERROR;
+      reason = PROTO_CALIB_R_MOVING;
+    }
+    else if (mpu6050_calib_start() != 0u)
+    {
+      state  = PROTO_CALIB_RUNNING;
+      reason = PROTO_CALIB_R_OK;
+    }
+    else
+    {
+      state  = PROTO_CALIB_ERROR;
+      reason = mpu6050_calib_reason();
+    }
+  }
+  else if (cmd == PROTO_CALIB_ABORT)
+  {
+    mpu6050_calib_abort();
+    state  = mpu6050_calib_state();
+    reason = mpu6050_calib_reason();
+  }
+  else
+  {
+    /* PROTO_CALIB_QUERY 及未知值：只报状态，不改任何东西 */
+  }
+
+  mpu6050_calib_get_bias(&bx, &by, &bz);
+
+  pl[0] = state;
+  pl[1] = mpu6050_calib_progress();
+  pl[2] = reason;
+  put_i16(&pl[3], (int16_t)(bx * 10.0f));   /* 0.1°/s */
+  put_i16(&pl[5], (int16_t)(by * 10.0f));
+  put_i16(&pl[7], (int16_t)(bz * 10.0f));
+
+  (void)link_send_frame(PROTO_T_GYRO_CALIB, pl, PROTO_LEN_CALIB_REPLY);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -508,6 +629,8 @@ static void dispatch(const proto_frame_t *fr)
     case PROTO_T_VERSION:   on_version(fr);   break;
     case PROTO_T_PULSE_SET: on_pulse_set(fr); break;
     case PROTO_T_PULSE_GET: on_pulse_get(fr); break;
+    case PROTO_T_SENSOR_RAW: on_sensor_raw(fr); break;
+    case PROTO_T_GYRO_CALIB: on_gyro_calib(fr); break;
 
     default:
       /* 未知类型：静默丢弃。正本要求"不回复"，也绝不能崩。 */
@@ -538,6 +661,7 @@ void proto_app_init(void)
 
   s_mode       = PROTO_MODE_MANUAL;   /* 上电先进手动，等上位机发 0x21=1 才自动化 */
   s_fault      = 0u;
+  s_sensor_fault = 0u;
   s_i2c_fail   = 0u;
   s_to_target  = 0u;
   s_to_hb      = 0u;
@@ -564,6 +688,37 @@ void proto_app_poll(void)
   }
 
   now = HAL_GetTick();
+
+  /* 0) T4 传感器：50Hz 采样 + 失联判定。
+   *    必须放在收帧之前：这一拍已经判故障的话，刚收到的 0x20 不能再让手臂动。
+   *
+   *    故障动作 = 停插补 + 底座原地保持 + 冻结四路 CCR。
+   *    和急停一样**不断开 PWM**：SG90 没脉冲就没有保持力矩，手臂会直接掉下来，
+   *    比"停在原位"危险得多（理由见文件头取舍 2）。
+   *
+   *    恢复：传感器重新读到数就自动清 s_sensor_fault / bit2 / bit4，
+   *    但**不会自动继续跑** —— 必须等上位机重新发 0x20。
+   *    这样拔插一次不会让手臂突然朝一个几分钟前的旧目标冲过去。 */
+  mpu6050_tick(now);
+  {
+    const uint8_t f = mpu6050_faulted();
+
+    s_i2c_fail = f;
+
+    if (f != 0u)
+    {
+      if (s_sensor_fault == 0u)
+      {
+        s_sensor_fault = 1u;
+        s_moving       = 0u;
+        arm_joint_hold_position();
+      }
+    }
+    else
+    {
+      s_sensor_fault = 0u;
+    }
+  }
 
   /* 1) 收：一次把队列取干净 */
   while (link_poll(&fr) == 1)

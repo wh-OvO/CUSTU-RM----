@@ -61,6 +61,14 @@ extern "C" {
 #define PROTO_T_PULSE_SET      0x31u   /* 单路脉宽设定 上位机 → 设备  4B */
 #define PROTO_T_PULSE_GET      0x32u   /* 脉宽回读     双向  query 1B / reply 9B */
 
+/* ---- T4 传感器扩展帧（同样不在任务书必做范围内）----
+ * 为什么需要：T4 要证明"确实读到了加速度和角速度"，光看 0x10 的 pitch
+ * 一个数不够 —— 评审要能区分"传感器没接，pitch 恒 0"和"接了就准"。
+ * 0x33 则是零偏标定的操作入口：静止 5 秒取均值，必须能手动触发。
+ */
+#define PROTO_T_SENSOR_RAW     0x30u   /* 传感器原始数据 双向 query 1B / reply 17B */
+#define PROTO_T_GYRO_CALIB     0x33u   /* 陀螺零偏标定   双向 cmd 1B / reply 9B */
+
 /* 各消息的载荷长度（正本 §4.2~§4.7） */
 #define PROTO_LEN_STATUS       19u
 #define PROTO_LEN_TARGET       11u
@@ -73,6 +81,12 @@ extern "C" {
 #define PROTO_LEN_PULSE_SET     4u    /* servo(u8) + pulse(u16) + flags(u8) */
 #define PROTO_LEN_PULSE_QUERY   1u    /* 内容无所谓，用 0x01 表示"请回读" */
 #define PROTO_LEN_PULSE_REPLY   9u    /* p0..p3(u16) + status(u8) */
+
+/* 0x30 / 0x33 的载荷长度 */
+#define PROTO_LEN_SENSOR_QUERY  1u    /* 内容无所谓，用 0x01 表示"请回读最新一帧" */
+#define PROTO_LEN_SENSOR_REPLY  17u   /* 6×int16 原始值 + temp + pitch + status */
+#define PROTO_LEN_CALIB_CMD     1u    /* 见 PROTO_CALIB_xxx */
+#define PROTO_LEN_CALIB_REPLY   9u    /* state + progress + reason + 3×int16 零偏 */
 
 /* ==========================================================================
  * 三、0x21 模式（正本 §4.4）
@@ -105,6 +119,33 @@ extern "C" {
  *    bit 定义也不同，不要混着看。 */
 #define PROTO_DBG_ACTIVE       0x01u   /* bit0 调试中（最近用过 0x31） */
 #define PROTO_DBG_FAULT        0x02u   /* bit1 故障态（急停中，0x31 会被拒绝） */
+
+/* ==========================================================================
+ * 四之三、0x30 / 0x33 传感器帧参数（T4 扩展）
+ * ========================================================================== */
+
+/* 0x30 应答的 status 字节（又和 0x10 / 0x32 的不是一回事） */
+#define PROTO_SENSOR_ST_OK         0x01u   /* bit0 最近一次读数有效（能信） */
+#define PROTO_SENSOR_ST_CALIB      0x02u   /* bit1 正在零偏标定 */
+#define PROTO_SENSOR_ST_FAULT      0x04u   /* bit2 传感器故障（丢线/未安装且要求必须装） */
+#define PROTO_SENSOR_ST_CALIBRATED 0x08u   /* bit3 零偏已标定（本上电周期内） */
+
+/* 0x33 命令字节 */
+#define PROTO_CALIB_QUERY      0x00u   /* 查询当前状态，不改变任何东西 */
+#define PROTO_CALIB_START      0x01u   /* 开始标定（设备要静止 5s） */
+#define PROTO_CALIB_ABORT      0x02u   /* 中止正在进行的标定 */
+
+/* 0x33 应答的 state 字节（和 mpu6050.h 的 MPU6050_CAL_xxx 一一对应） */
+#define PROTO_CALIB_IDLE       0u
+#define PROTO_CALIB_RUNNING    1u
+#define PROTO_CALIB_DONE       2u
+#define PROTO_CALIB_ERROR      3u
+
+/* 0x33 应答的 reason 字节（error 时才有意义） */
+#define PROTO_CALIB_R_OK       0u   /* 没错误 */
+#define PROTO_CALIB_R_NO_SENSOR 1u  /* 传感器不在线 */
+#define PROTO_CALIB_R_I2C      2u   /* 标定途中 I²C 失败 */
+#define PROTO_CALIB_R_MOVING   3u   /* 标定途中检测到运动（或调用时机械臂还在动） */
 
 /* ==========================================================================
  * 五、0x10 状态位（正本 §4.2）

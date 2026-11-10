@@ -26,6 +26,7 @@
 #include "arm_pwm.h"       /* T1: arm_init() / arm_set_deg() */
 #include "arm_joint.h"     /* T2: arm_joint_init() / 关节执行层（底座闭环） */
 #include "arm_cfg.h"       /* T1: 标定表 g_arm_joint[] 与时基宏 */
+#include "mpu6050.h"       /* T4: MPU6050 姿态传感器（I²C1，400kHz） */
 #include "proto_app.h"     /* T5a: proto_app_init() / proto_app_poll() */
 /* USER CODE END Includes */
 
@@ -192,6 +193,16 @@ static void print_banner(void)
 
   printf("==============================\r\n");
   printf("[T1] 就绪: 四路 PWM 已输出中位；标定见 docs/T1_角度脉宽映射_说明.md\r\n");
+
+  /* T4：上电探测结果。没装也不影响舵机 —— 见 mpu6050.h 里 MPU6050_REQUIRED */
+  if (mpu6050_present() != 0u)
+  {
+    printf("[T4] MPU6050 在线 (WHO_AM_I=0x68, ±2g/±500dps, I2C1 400kHz)\r\n");
+  }
+  else
+  {
+    printf("[T4] MPU6050 未检测到（pitch 填 0，其余功能照常；见 docs/T4_MPU6050_说明.md）\r\n");
+  }
 }
 
 /* ---------------- T0 上电自检 ---------------- */
@@ -208,6 +219,11 @@ static void t0_setup(void)
   /* 关节执行层：决定哪个关节走闭环（底座 360°）、哪个直通。
    * 必须在 arm_init() 之后 —— 它内部要往 CCR 写零位脉宽。 */
   arm_joint_init();
+
+  /* T4 姿态传感器：探测 MPU6050（WHO_AM_I=0x68）+ 配量程/滤波/采样率。
+   * 此时 MX_I2C1_Init() 已经跑过，I2C1 是 400kHz。
+   * 内部有约 110ms 的软复位等待，只在启动时做一次。 */
+  (void)mpu6050_init();
 
   print_banner();
 
