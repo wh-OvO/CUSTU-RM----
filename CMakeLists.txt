@@ -64,8 +64,17 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 # 「由 CubeMX 生成，不得手改」，而且每次 GENERATE CODE 都会被覆盖。
 # CubeMX 默认给 Release 的是 -Os，这里用 target 级选项补一个 -O2：
 # gcc 命令行上后出现的 -O 会覆盖前面的 -O。
+#
+# 同理，Debug 的 -O0 也在这里覆盖成 -Og。原因（2026-11-10 实测）：
+#   -O0 -g3  → 62088 B / 94.74%（只剩 3.4 KB，加一点点功能就链接失败）
+#   -Og -g3  → 39584 B / 60.40%（剩 25.3 KB）
+#   -O2      → 37168 B / 56.71%
+# -O0 的全量代码是 60 KB，不是"代码本来就大" —— 是 -O0 不做任何优化撑出来的。
+# 而 -Og 是 gcc 专为调试加的档位：变量不丢、不重排、单步不跳，调试体验和 -O0
+# 基本一样，只是省掉 22 KB。**别用 -O2 调程序**，变量会被优化没，单步会乱跳。
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
     $<$<CONFIG:Release>:-O2>
+    $<$<CONFIG:Debug>:-Og>
 )
 
 # Add include paths
