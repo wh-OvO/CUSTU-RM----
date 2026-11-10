@@ -16,6 +16,7 @@ tests/*.obj
 # ---- CubeMX / IDE 本地状态（不影响复现，不进仓库）----
 .mxproject
 .settings/bundles-lock.store.json
+.settings/bundles.store.json
 .vscode/ipch/
 
 # ---- 系统 ----
