@@ -15,8 +15,8 @@ tests/*.obj
 
 # ---- CubeMX / IDE 本地状态（不影响复现，不进仓库）----
 .mxproject
-.settings/bundles-lock.store.json
-.settings/bundles.store.json
+# VS Code CMake Tools 的缓存（bundles.store / ide.store / bundles-lock.store），全是本机状态
+.settings/
 .vscode/ipch/
 
 # ---- 系统 ----
