@@ -94,15 +94,44 @@ static float    s_bias[3];                 /* °/s */
  * 一、I²C 小工具
  * ========================================================================== */
 
+/* 当前实际使用的从机地址（已经左移一位后的 8 位形式）。
+ *
+ * 为什么做成变量而不是直接用 MPU6050_ADDR 宏：
+ * 市面上的"MPU6050"模块有大量是国产克隆片，或者干脆是 MPU6500 / MPU9250 换标，
+ * AD0 的实际接线也不一定和丝印一致（有的模块 AD0 内部就上拉了）。
+ * 所以探测时两个地址都试，试通了就记下来，后面所有读写都走这个。
+ * 默认值仍然是 MPU6050_ADDR，保证"一切正常"时行为和以前一模一样。 */
+static uint8_t s_addr = MPU6050_ADDR;
+
+/**
+  * @brief  判断 WHO_AM_I 的返回值能不能接受
+  * @param  who  从寄存器 0x75 读回来的一个字节
+  * @return 1 = 认可（后面按 MPU6050 的寄存器映射去配置），0 = 不认
+  *
+  * @note   三个值分别对应：
+  *           0x68 → MPU6050（原厂，也是协议里写的目标器件）
+  *           0x70 → MPU6500（大量便宜模块实际装的是它）
+  *           0x71 → MPU9250（多了磁力计，本工程不用）
+  *
+  *         关键点：**这三颗的寄存器映射对本工程是兼容的** ——
+  *           数据从 0x3B 起连续 14 字节、±2g 量程 16384 LSB/g、
+  *           ±500°/s 量程 65.5 LSB/(°/s)，和 MPU6050 完全一致。
+  *         所以只放宽"身份检查"，后面的采样、换算、倾角算法一个字都不用改。
+  */
+static uint8_t who_am_i_ok(uint8_t who)
+{
+  return ((who == 0x68u) || (who == 0x70u) || (who == 0x71u)) ? 1u : 0u;
+}
+
 static uint8_t i2c_write(uint8_t reg, uint8_t val)
 {
-  return (HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDR, reg, I2C_MEMADD_SIZE_8BIT,
+  return (HAL_I2C_Mem_Write(&hi2c1, s_addr, reg, I2C_MEMADD_SIZE_8BIT,
                             &val, 1u, MPU6050_I2C_TIMEOUT_MS) == HAL_OK) ? 1u : 0u;
 }
 
 static uint8_t i2c_read(uint8_t reg, uint8_t *buf, uint16_t len)
 {
-  return (HAL_I2C_Mem_Read(&hi2c1, MPU6050_ADDR, reg, I2C_MEMADD_SIZE_8BIT,
+  return (HAL_I2C_Mem_Read(&hi2c1, s_addr, reg, I2C_MEMADD_SIZE_8BIT,
                            buf, len, MPU6050_I2C_TIMEOUT_MS) == HAL_OK) ? 1u : 0u;
 }
 
@@ -125,14 +154,33 @@ static void bus_recover(void)
 
 static uint8_t probe(void)
 {
-  uint8_t who = 0u;
+  /* 依次试两种从机地址：
+   *   cand[0] = 0x68 << 1 = 0xD0  （AD0 接地，本工程默认，也是协议文档写的接法）
+   *   cand[1] = 0x69 << 1 = 0xD2  （AD0 接高，或者模块内部把 AD0 上拉了）
+   * 用 static const 数组：不占栈、不用每次重建，编译器还能直接放 Flash。 */
+  static const uint8_t cand[2] = { MPU6050_ADDR, (uint8_t)(0x69u << 1) };
 
-  if (i2c_read(MPU6050_REG_WHO_AM_I, &who, 1u) == 0u)
+  uint8_t  who = 0u;
+  uint32_t i;
+
+  for (i = 0u; i < 2u; ++i)
   {
-    return 0u;
+    s_addr = cand[i];
+
+    if (i2c_read(MPU6050_REG_WHO_AM_I, &who, 1u) == 0u)
+    {
+      continue;                    /* 这个地址上没人应答，换下一个 */
+    }
+
+    if (who_am_i_ok(who) != 0u)
+    {
+      return 1u;                   /* 认到了：s_addr 已经指向正确的地址 */
+    }
   }
 
-  return (who == MPU6050_WHO_AM_I_VAL) ? 1u : 0u;
+  /* 两个地址都没认到：恢复默认地址，免得影响下一轮探测 */
+  s_addr = MPU6050_ADDR;
+  return 0u;
 }
 
 /**
