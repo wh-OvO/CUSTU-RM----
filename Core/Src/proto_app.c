@@ -44,6 +44,7 @@
 #define APP_TGT_TIMEOUT_MS   3000u    /* 正本 §5：3 秒没收到 0x20 */
 #define APP_HB_TIMEOUT_MS    3000u    /* 正本 §5：3 秒没收到心跳 */
 #define APP_HOMING_SHOW_MS   500u     /* bit1"正在回零"至少显示这么久（无编码器，只能估） */
+#define APP_BOOT_HOME_DELAY_MS 500u   /* T3：上电后等这么久再自动回零（让舵机先稳住） */
 
 /* 插补节拍必须和上报周期一致，否则 0x10 里报出来的 act 是隔拍的旧值。 */
 #if (APP_REPORT_MS != ARM_INTERP_TICK_MS)
@@ -81,6 +82,21 @@ static float    s_q_from[ARM_JOINT_NUM];    /* 本段起点，单位「度」 */
 static uint16_t s_dur_ms;                   /* 本段总时长，单位 ms */
 static uint32_t s_ms_move0;                 /* 本段开始时刻 */
 static uint8_t  s_moving;                   /* 1 = 正在插补 */
+
+/* ---- T3：上电自动回零 ----
+ * 三个变量的关系和"谁先谁后"很容易搞混，写清楚：
+ *   s_boot_home_pending = 1  还在等（上电时置 1，收到任何指令就清 0）
+ *   s_boot_home_active  = 1  正在回零（pending 转过来的，走完自己清 0）
+ * 两者不会同时为 1，也不会同时为 0 之后再变回 1（一次性流程）。 */
+static uint32_t s_ms_boot;                  /* 上电时刻（proto_app_init 里记） */
+static uint8_t  s_boot_home_pending;        /* 1 = 还在等自动回零 */
+static uint8_t  s_boot_home_active;         /* 1 = 自动回零进行中 */
+
+/* ---- T3：越界钳位 ----
+ * 语义是"最近一条指令有没有越界"，**每条指令重算一次**，不是攒着的报警。
+ * 所以：下一条合法指令到达 → 自动清 0；不需要人工复位。
+ * 越界了照样执行，只是执行的是**钳位后**的边界值。 */
+static uint8_t  s_limit_hit;                /* 1 = 已钳位（→ status bit6） */
 
 /* ---- 时间戳 ---- */
 static uint32_t s_ms_target_rx;
@@ -161,6 +177,10 @@ uint8_t proto_app_status(void)
   if ((s_to_target != 0u) || (s_to_hb != 0u))
   {
     st |= PROTO_ST_TIMEOUT;                    /* bit5 指令超时 */
+  }
+  if (s_limit_hit != 0u)
+  {
+    st |= PROTO_ST_LIMIT;                      /* bit6 越界已钳位（本工程扩展位） */
   }
 
   return (uint8_t)(st & (uint8_t)~PROTO_ST_RESERVED);   /* bit6~7 必须为 0 */
@@ -294,16 +314,48 @@ static void on_target(const proto_frame_t *fr)
   uint8_t  j;
   uint16_t dur;
   uint8_t  profile;
+  uint8_t  limited;
+  int32_t  q;
+  int32_t  lo;
+  int32_t  hi;
 
   if (fr->len != PROTO_LEN_TARGET)
   {
     return;                          /* 长度不对直接忽略，不当成致命错误 */
   }
 
+  /* T3 越界钳位：取值 → 对比该关节的 [deg_min, deg_max] → 夹住 → 记标志。
+   *
+   * 为什么设备端还要夹一遍：上位机本来有软限位（正本 §6「下发前限幅保护」），
+   * 但那是**上位机**的义务。设备端是最后一道防线 —— 上位机配置错了、
+   * 或者有人拿串口助手手拼一帧，都不该让舵机去撞机械限位。
+   *
+   * 注意这里是"钳位后照边界走"，不是"拒绝执行"：拒绝会让手臂完全不动，
+   * 那和任务书要的"被钳位"是两回事。
+   *
+   * 用 int32_t 算：int16_t 的 deg_max 乘 10 在 180 以内不会溢出，
+   * 但以后要是有人把 deg_max 改成 4000（0.1° 单位），int16_t 就会悄悄溢出。 */
+  limited = 0u;
   for (j = 0u; j < ARM_JOINT_NUM; j++)
   {
-    s_tgt_x10[j] = get_i16(&fr->payload[(uint16_t)j * 2u]);
+    q  = (int32_t)get_i16(&fr->payload[(uint16_t)j * 2u]);   /* 0.1° */
+    lo = (int32_t)g_arm_joint[j].deg_min * 10;
+    hi = (int32_t)g_arm_joint[j].deg_max * 10;
+
+    if (q < lo)
+    {
+      q       = lo;
+      limited = 1u;
+    }
+    else if (q > hi)
+    {
+      q       = hi;
+      limited = 1u;
+    }
+
+    s_tgt_x10[j] = (int16_t)q;
   }
+  s_limit_hit = limited;   /* 每帧重算：下一条合法指令到达就自动清 0 */
 
   /* 0x20 载荷：q1~q4_tgt(8B) + duration u16(2B) + profile u8(1B) */
   dur     = get_u16(&fr->payload[8]);
@@ -322,6 +374,10 @@ static void on_target(const proto_frame_t *fr)
   s_ms_target_rx = HAL_GetTick();
   s_to_target    = 0u;
   s_dbg          = 0u;               /* 回到正常控制流，退出调试模式 */
+
+  /* 人已经在发目标了 → 取消还没执行的上电自动回零。
+   * 不取消的话，可能出现"上位机正命令它去某处，500ms 到了却被拽回零位"。 */
+  s_boot_home_pending = 0u;
 
   /* 重复收到同一个目标也没关系：起点=当前位置、终点=目标，
    * 走过去是 0 位移，无害。 */
@@ -375,6 +431,10 @@ static void on_mode(const proto_frame_t *fr)
 
   /* 任何模式切换都退出调试模式：收到模式帧意味着"要按正常流程控制" */
   s_dbg = 0u;
+
+  /* 显式发过模式帧 = 人接管了，取消上电自动回零
+   * （尤其是 0x21=1 自动模式：上位机正要自己发目标，别被回零打断） */
+  s_boot_home_pending = 0u;
 }
 
 static void on_estop(const proto_frame_t *fr)
@@ -384,6 +444,11 @@ static void on_estop(const proto_frame_t *fr)
     s_fault  = 1u;                   /* 冻结 + bit2，见文件头取舍 2 */
     s_moving = 0u;                   /* 立刻停插补：再晚一拍就又多走一步 */
     arm_joint_hold_position();       /* 底座的闭环也原地停住 */
+
+    /* 急停了就别再自动回零 —— 故障态下 move_start() 本来也会拒绝，
+     * 但把 pending 清掉更干净：否则故障解除后会突然冒出来走一段。 */
+    s_boot_home_pending = 0u;
+    s_boot_home_active  = 0u;
   }
 }
 
@@ -455,6 +520,13 @@ static void on_pulse_set(const proto_frame_t *fr)
   /* ③ 先写脉宽，再决定开不开输出，顺序不能反。
    * 反过来的话，通道会按寄存器里的旧值先输出一小段，舵机"抖一下" ——
    * 标定时这一下很容易被人误判成"已经到限位了"。 */
+  /* 越界标志：arm_set_us() 内部会夹到 [500, 2500]，但那之后我们就不知道
+   * "原来是多少"了 —— 所以必须**先判再写**。
+   * ArmHost README §12.3 对 0x31 就是这么要求的：「越界时按 500/2500µs 钳位并置 status」。
+   * 和 0x20 一样，每条指令重算一次，发一条合法脉宽就自动清掉。 */
+  s_limit_hit = (uint8_t)(((us < SERVO_US_NOMINAL_MIN) ||
+                           (us > SERVO_US_NOMINAL_MAX)) ? 1u : 0u);
+
   arm_set_us(servo, us);
   arm_output_enable(servo, (uint8_t)(((flags & PROTO_PULSE_FLAG_EN) != 0u) ? 1u : 0u));
 
@@ -669,6 +741,16 @@ void proto_app_init(void)
   s_started    = 1u;
   s_dbg        = 0u;
 
+  /* T3：登记"等会儿要自动回零"。这里**只登记不动手** ——
+   * 真正动起来在 proto_app_poll 里，因为要等 500ms 让舵机先从中位稳住。
+   * 为什么不在 init 里直接 move_start：init 时 MX_TIM2 刚起、舵机可能正在上电
+   * 抽动，这时候又给它一个新目标，会出现"两只手同时拽"的抖动。 */
+  s_ms_boot           = now;
+  s_boot_home_pending = 1u;
+  s_boot_home_active  = 0u;
+
+  s_limit_hit         = 0u;           /* T3：上电没有越界 */
+
   /* 超时计时从现在开始算，避免上电瞬间就报超时 */
   s_ms_target_rx = now;
   s_ms_hb_rx     = now;
@@ -724,6 +806,54 @@ void proto_app_poll(void)
   while (link_poll(&fr) == 1)
   {
     dispatch(&fr);
+  }
+
+  /* 1.5) T3：上电自动回零
+   *
+   * 三条设计约束，每条都有理由：
+   *   ① 延迟 500ms —— 上电瞬间舵机正从中位往零位爬，这时候再塞一个目标
+   *      等于"两只手同时拽"，会抖。等它先稳住。
+   *   ② 收到任何指令就取消 —— 上位机可能比我们快。人的指令永远优先于
+   *      自动流程，否则会出现"上位机正命令它去某处，500ms 到了却被拽回零位"。
+   *   ③ 走插补不直接跳 —— 直接写目标会让四个关节同时全速冲，冲击大；
+   *      而且回零本来就"是一种运动"，走同一条路才能被 T2 的插补器统一管理。
+   *
+   * 位置也很讲究：必须放在 dispatch 之后 —— 如果这一拍刚好收到 0x20，
+   * 它已经把 pending 清掉了，这里就不会再抢一次。
+   */
+  if ((s_boot_home_pending != 0u) &&
+      ((now - s_ms_boot) >= APP_BOOT_HOME_DELAY_MS))
+  {
+    uint8_t k;
+
+    s_boot_home_pending = 0u;
+    s_boot_home_active  = 1u;
+
+    s_mode      = PROTO_MODE_HOMING;
+    s_ms_homing = now;
+
+    for (k = 0u; k < ARM_JOINT_NUM; k++)
+    {
+      s_tgt_x10[k] = (int16_t)((int16_t)g_arm_joint[k].deg_home * 10);
+    }
+    move_start(ARM_HOMING_MS);
+  }
+
+  /* 1.6) 自动回零走完 → 回到手动
+   *
+   * 不回来的话 s_mode 永远是 HOMING，而 bit5"指令超时"判的是
+   * "非手动模式 + 3 秒没收到 0x20"。上位机还没连上就先报超时，
+   * 接上线第一眼是个红字，容易被误判成设备坏了。
+   *
+   * 只处理**自动**回零：人手发的 0x21=2 保持原行为（停在回零态等新目标），
+   * 因为那是人的显式意图，不该被我们改回手动。 */
+  if ((s_boot_home_active != 0u) &&
+      (s_moving == 0u) && (arm_joint_moving() == 0u) &&
+      ((now - s_ms_homing) >= APP_HOMING_SHOW_MS))
+  {
+    s_boot_home_active = 0u;
+    s_mode             = PROTO_MODE_MANUAL;
+    s_ms_target_rx     = now;        /* 超时计时重新起算 */
   }
 
   /* 2) 20ms 节拍：**先推进插补，再跑执行层，最后上报**。
