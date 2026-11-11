@@ -65,7 +65,7 @@ const arm_joint_cfg_t g_arm_joint[ARM_JOINT_NUM] =
     .us_per_dps     = 0.0f,     /* ← 仅 VEL 用：每 °/s 需要多少 µs */
   },
 
-  /* ---- J2 大臂（PA1 / TIM2_CH2）--------------------------------------
+  /* ---- J2 大臂（PA1 / TIM2_CH2）#mg90s#--------------------------------------
    * 抬升关节，负载最大。**行程要留余量**，大臂顶到极限最容易堵转烧舵机。
    */
   {
@@ -74,13 +74,13 @@ const arm_joint_cfg_t g_arm_joint[ARM_JOINT_NUM] =
     .deg_min        = 0,
     .deg_max        = 180,
     .deg_home       = 90,
-    .us_at_deg_min  = 600,      /* ← 标定后改这里 */
-    .us_at_deg_max  = 2400,     /* ← 标定后改这里 */
+    .us_at_deg_min  = 500,      /* ← 标定后改这里 */
+    .us_at_deg_max  = 2500,     /* ← 标定后改这里 */
     .us_stop        = 0,
     .us_per_dps     = 0.0f,
   },
 
-  /* ---- J3 小臂（PA2 / TIM2_CH3）--------------------------------------
+  /* ---- J3 小臂（PA2 / TIM2_CH3）#mg90s#--------------------------------------
    * 和 J2 类似，但负载小。如果装反了（角度增大反而往下压），
    * 把下面两个 µs 值**对调**即可，不用改代码逻辑。
    */
@@ -90,8 +90,8 @@ const arm_joint_cfg_t g_arm_joint[ARM_JOINT_NUM] =
     .deg_min        = 0,
     .deg_max        = 180,
     .deg_home       = 90,
-    .us_at_deg_min  = 600,      /* ← 标定后改这里 */
-    .us_at_deg_max  = 2400,     /* ← 标定后改这里 */
+    .us_at_deg_min  = 500,      /* ← 标定后改这里 */
+    .us_at_deg_max  = 2500,     /* ← 标定后改这里 */
     .us_stop        = 0,
     .us_per_dps     = 0.0f,
   },
@@ -106,8 +106,8 @@ const arm_joint_cfg_t g_arm_joint[ARM_JOINT_NUM] =
     .deg_min        = 0,
     .deg_max        = 60,
     .deg_home       = 30,
-    .us_at_deg_min  = 600,      /* ← 标定后改这里 */
-    .us_at_deg_max  = 2400,     /* ← 标定后改这里 */
+    .us_at_deg_min  = 500,      /* ← 标定后改这里 */
+    .us_at_deg_max  = 2500,     /* ← 标定后改这里 */
     .us_stop        = 0,
     .us_per_dps     = 0.0f,
   },
