@@ -425,7 +425,16 @@ static void MX_TIM2_Init(void)
 {
 
   /* USER CODE BEGIN TIM2_Init 0 */
-
+  /* ★ 四个通道**全部**必须是 PWM Generation 模式。
+   *
+   *   2026-11-11 换板那一次，CubeMX 里 TIM2_CH2 被误设成 "Forced Output CH2"，
+   *   于是通道 2 不再是 PWM，而是**恒定高电平**：
+   *     - PB3（J2 大臂）一直 3.3V，万用表读 3.3V 而不是 0.25V
+   *     - CCR 写了也没用（强制输出忽略比较值，J2 完全不听指令）
+   *   症状特别像"重映射没生效"，但重映射其实是好的，别去乱改 AFIO。
+   *
+   *   判据：万用表量 PB3 恒 3.3V（另外三路正常）→ 先回来查这里和 .ioc。
+   *   rm_arm.ioc 已同步改回 PWM Generation2，重新 GENERATE CODE 不会复发。 */
   /* USER CODE END TIM2_Init 0 */
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
@@ -454,10 +463,6 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
-  if (HAL_TIM_OC_Init(&htim2) != HAL_OK)
-  {
-    Error_Handler();
-  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
@@ -472,12 +477,10 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
-  sConfigOC.OCMode = TIM_OCMODE_FORCED_ACTIVE;
-  if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
   if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
   {
     Error_Handler();
