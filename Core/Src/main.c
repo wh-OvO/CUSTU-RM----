@@ -208,7 +208,7 @@ static void print_banner(void)
 /* ---------------- T0 上电自检 ---------------- */
 static void t0_setup(void)
 {
-  /* LED 先灭（PC13 低电平点亮） */
+  /* LED 先灭（野火板 PA1 = LED_R，低电平点亮） */
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
 
   setvbuf(stdout, NULL, _IONBF, 0);   /* 关掉缓冲，插上串口就能看到 */
@@ -243,7 +243,12 @@ static uint8_t key_scan(void)
   static uint8_t  raw_prev = 0;
   static uint32_t t_edge   = 0;
 
-  uint8_t  raw = (HAL_GPIO_ReadPin(KEY_GPIO_Port, KEY_Pin) == GPIO_PIN_RESET) ? 1u : 0u;
+  /* ★ 野火板 KEY1 = PA0，**按下去接的是 3V3**（板上外部下拉，官方 HAL 例程
+   *   也是按 `ReadPin() == 1` 判断按下），所以"按下"读到的是 GPIO_PIN_SET。
+   *   上一版 Blue Pill 用的是接地微动开关 + 内部上拉，判断条件正好相反
+   *   （GPIO_PIN_RESET），迁移时这一行必须跟着翻过来，否则按键逻辑整个反掉。
+   *   兜底：KEY 在 CubeMX 里配成 GPIO_PULLDOWN，线没插好时稳定读"松开"。 */
+  uint8_t  raw = (HAL_GPIO_ReadPin(KEY_GPIO_Port, KEY_Pin) == GPIO_PIN_SET) ? 1u : 0u;
   uint32_t now = HAL_GetTick();
 
   if (raw != raw_prev)          /* 电平刚变，重新计时 */
@@ -267,7 +272,7 @@ static uint8_t key_scan(void)
 /* ---------------- T0 主循环体 ---------------- */
 static void t0_loop(void)
 {
-  static uint8_t led_on = 0;    /* 逻辑亮灭；PC13 低电平点亮 */
+  static uint8_t led_on = 0;    /* 逻辑亮灭；野火板 PA1=LED_R 低电平点亮 */
 
   if (key_scan())
   {
@@ -306,7 +311,7 @@ int main(void)
 
   /* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals *///初始化外设
+  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
@@ -449,6 +454,10 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_OC_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
@@ -456,18 +465,19 @@ static void MX_TIM2_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 3000;
+  sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigOC.Pulse = 0;
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  sConfigOC.OCMode = TIM_OCMODE_FORCED_ACTIVE;
+  if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
   }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
   if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
   {
     Error_Handler();
@@ -570,10 +580,37 @@ static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
 /* USER CODE BEGIN MX_GPIO_Init_1 */
+  /* ======================================================================
+   * ★★★ 换野火 F103C8T6 核心板必看：TIM2 全重映射 + 关 JTAG 留 SWD ★★★
+   *
+   * 【为什么这两行必须手写】
+   *   CubeMX 对 STM32F1 的定时器重映射**只生成引脚 AF 配置**，不生成
+   *   AFIO_MAPR 里的重映射位。证据：stm32f1xx_hal_msp.c 的
+   *   HAL_TIM_MspPostInit() 已经把 PB3/PB10/PB11/PA15 设成 GPIO_MODE_AF_PP，
+   *   但全项目搜不到 REMAP_TIM2。
+   *
+   *   只配 AF、不改 MAPR 会怎样？信号仍旧从 PA0/PA1/PA2/PA3 出来。
+   *   而野火板上那四个脚是 KEY1 按键和 LED_R/G/B —— 结果是四路舵机一动不动，
+   *   按一下 KEY1 还等于把 3V3 短接到一个正在输出低电平的 PWM 脚上。
+   *
+   * 【两行分别做什么】
+   *   __HAL_AFIO_REMAP_SWJ_NOJTAG() → SWJ_CFG = 001：关掉 JTAG，保留 SWD。
+   *       PA15 出厂是 JTDI、PB3 出厂是 JTDO，不关 JTAG 它们不能当 PWM 用。
+   *       SWD 在 PA13/PA14 上，照常下载调试，一点影响都没有。
+   *   __HAL_AFIO_REMAP_TIM2_ENABLE() → TIM2_REMAP = 11（全重映射）：
+   *       CH1→PA15   CH2→PB3   CH3→PB10   CH4→PB11
+   *
+   * 【为什么放在这里能行】
+   *   AFIO 的 RCC 时钟在 HAL_MspInit() 里已经开了（stm32f1xx_hal_msp.c:73），
+   *   而 HAL_Init() 早于 MX_GPIO_Init()，所以这里可以直接写 AFIO->MAPR。
+   *
+   * 【改动历史】2026-11-11 从 Blue Pill 迁到野火板时加的。
+   * ====================================================================== */
+  __HAL_AFIO_REMAP_SWJ_NOJTAG();
+  __HAL_AFIO_REMAP_TIM2_ENABLE();
 /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
@@ -581,18 +618,18 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
 
+  /*Configure GPIO pin : KEY_Pin */
+  GPIO_InitStruct.Pin = KEY_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(KEY_GPIO_Port, &GPIO_InitStruct);
+
   /*Configure GPIO pin : LED_Pin */
   GPIO_InitStruct.Pin = LED_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : KEY_Pin */
-  GPIO_InitStruct.Pin = KEY_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(KEY_GPIO_Port, &GPIO_InitStruct);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
@@ -633,10 +670,3 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
-/*
-  24–75	  Includes / 宏 / 全局	                                              我们
-  77–240	log_flush __io_putchar reset_cause_str t0_setup key_scan t0_loop	 我们
-  242–290	main()	                                            CubeMX 骨架 + 我们两行
-  292–556	MX_GPIO_Init 等 6 个初始化函数	                                CubeMX 生成
-  557–591	USER CODE 4 + Error_Handler	                                      混
-*/

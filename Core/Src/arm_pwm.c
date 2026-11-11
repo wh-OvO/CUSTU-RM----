@@ -28,13 +28,23 @@
 /* main.c 里定义的定时器句柄，这里只声明不定义 */
 extern TIM_HandleTypeDef htim2;
 
-/* 关节编号 → TIM2 通道。顺序必须和 g_arm_joint[] / 引脚表一致 */
+/* 关节编号 → TIM2 通道。顺序必须和 g_arm_joint[] / 引脚表一致。
+ *
+ * ★ 2026-11-11 换野火板后：TIM2 做了**全重映射**，通道号没变，只是从
+ *   哪根脚出来变了。重映射本身在 main.c 的 MX_GPIO_Init() 里写：
+ *       __HAL_AFIO_REMAP_TIM2_ENABLE();
+ *
+ *     J1 TIM2_CH1 → PA15      J2 TIM2_CH2 → PB3
+ *     J3 TIM2_CH3 → PB10      J4 TIM2_CH4 → PB11
+ *
+ *   原来 Blue Pill 上是 PA0/PA1/PA2/PA3，现在野火板那四个脚是
+ *   KEY1 按键和 LED_R/G/B，不能再用。 */
 static const uint32_t s_channel[ARM_JOINT_NUM] =
 {
-  TIM_CHANNEL_1,   /* J1 → PA0 */
-  TIM_CHANNEL_2,   /* J2 → PA1 */
-  TIM_CHANNEL_3,   /* J3 → PA2 */
-  TIM_CHANNEL_4,   /* J4 → PA3 */
+  TIM_CHANNEL_1,   /* J1 → PA15（全重映射） */
+  TIM_CHANNEL_2,   /* J2 → PB3  */
+  TIM_CHANNEL_3,   /* J3 → PB10 */
+  TIM_CHANNEL_4,   /* J4 → PB11 */
 };
 
 /* ------------------------------------------------------------------------- */

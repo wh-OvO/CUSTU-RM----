@@ -29,10 +29,19 @@
  *
  *   关节   定时器通道     芯片引脚     CubeMX 里的标签
  *   ----   -----------    --------     ---------------
- *   J1     TIM2_CH1       PA0          TIM2_CH1
- *   J2     TIM2_CH2       PA1          TIM2_CH2
- *   J3     TIM2_CH3       PA2          TIM2_CH3
- *   J4     TIM2_CH4       PA3          TIM2_CH4
+ *   J1     TIM2_CH1       PA15         TIM2_CH1
+ *   J2     TIM2_CH2       PB3          TIM2_CH2
+ *   J3     TIM2_CH3       PB10         TIM2_CH3
+ *   J4     TIM2_CH4       PB11         TIM2_CH4
+ *
+ *   ⚠️ 2026-11-11 从 Blue Pill 换到野火 F103C8T6 核心板后，四个脚都变了：
+ *      原来是 PA0/PA1/PA2/PA3（野火板上是 KEY1 和 RGB 灯，不能占用），
+ *      现在靠 TIM2 **全重映射**挪到 PA15/PB3/PB10/PB11。
+ *      重映射写在哪：main.c 的 MX_GPIO_Init() 里
+ *          __HAL_AFIO_REMAP_SWJ_NOJTAG();    ← PA15/PB3 出厂是 JTAG 脚
+ *          __HAL_AFIO_REMAP_TIM2_ENABLE();   ← TIM2_REMAP = 11（全重映射）
+ *      注意：下面这张表是**注释**，改脚不用动代码，CubeMX 会生成 AF 配置；
+ *           但上面两行 remap 必须手工维护，CubeMX 不会帮你写。
  *
  *   顺序不能乱改：arm_pwm.c 里的 s_channel[] 按同样顺序映射通道，
  *   改了这个顺序就要同步改那张表，否则 J2 的指令会打到 J3 上。
@@ -40,7 +49,7 @@
 
 const arm_joint_cfg_t g_arm_joint[ARM_JOINT_NUM] =
 {
-  /* ---- J1 底座回转（PA0 / TIM2_CH1）----------------------------------
+  /* ---- J1 底座回转（PA15 / TIM2_CH1，全重映射）--------------------------
    * **唯一的特殊关节：按学长方案是 360° 连续旋转舵机。**
    *
    * 现在填的是 .kind = ARM_JOINT_POS —— 因为 360° 舵机和 AS5600 都还没到，
@@ -65,7 +74,7 @@ const arm_joint_cfg_t g_arm_joint[ARM_JOINT_NUM] =
     .us_per_dps     = 0.0f,     /* ← 仅 VEL 用：每 °/s 需要多少 µs */
   },
 
-  /* ---- J2 大臂（PA1 / TIM2_CH2）#mg90s#--------------------------------------
+  /* ---- J2 大臂（PB3 / TIM2_CH2）#mg90s#--------------------------------------
    * 抬升关节，负载最大。**行程要留余量**，大臂顶到极限最容易堵转烧舵机。
    */
   {
@@ -80,7 +89,7 @@ const arm_joint_cfg_t g_arm_joint[ARM_JOINT_NUM] =
     .us_per_dps     = 0.0f,
   },
 
-  /* ---- J3 小臂（PA2 / TIM2_CH3）#mg90s#--------------------------------------
+  /* ---- J3 小臂（PB10 / TIM2_CH3）#mg90s#--------------------------------------
    * 和 J2 类似，但负载小。如果装反了（角度增大反而往下压），
    * 把下面两个 µs 值**对调**即可，不用改代码逻辑。
    */
@@ -96,7 +105,7 @@ const arm_joint_cfg_t g_arm_joint[ARM_JOINT_NUM] =
     .us_per_dps     = 0.0f,
   },
 
-  /* ---- J4 夹爪（PA3 / TIM2_CH4）--------------------------------------
+  /* ---- J4 夹爪（PB11 / TIM2_CH4）--------------------------------------
    * 只开合，行程小。逻辑角度用 0~60 表示「闭 → 开」，
    * 这样上层协议里 0.1° 的数值仍然有意义（0 = 全闭，600 = 全开）。
    */
