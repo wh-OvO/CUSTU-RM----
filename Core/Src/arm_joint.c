@@ -60,6 +60,31 @@ static float wrap180(float a)
 }
 
 /* ------------------------------------------------------------------------- */
+/* 底座实测角：把 AS5600 的原始读数换算到"机械坐标系"                          */
+/*                                                                            */
+/* 这是**全工程唯一**该读 AS5600 的地方。别在别的文件里再直接调                */
+/* as5600_read_deg()，否则同一个角度会出现两种坐标系，调起来没完没了。         */
+/* ------------------------------------------------------------------------- */
+static uint8_t base_read_deg(float *deg)
+{
+  float raw = 0.0f;
+
+  if (as5600_read_deg(&raw) == 0u)
+  {
+    return 0u;                       /* 读失败：*deg 保持不动，调用方自己判断 */
+  }
+
+  /* 机械角 = wrap180( SIGN × (原始角 − 零位偏置) )
+   *
+   *   减 ZERO   磁铁装在哪，AS5600 的零点就在哪，跟机械零位无关
+   *   乘 SIGN   磁铁装反 / 舵机反向时两者方向相反，不乘就变正反馈
+   *   绕 ±180   减完可能跑到 0~360 之外，绕回来才好算误差 */
+  *deg = wrap180(ARM_BASE_ENC_SIGN * (raw - ARM_BASE_ENC_ZERO_DEG));
+
+  return 1u;
+}
+
+/* ------------------------------------------------------------------------- */
 /* 速度型关节的闭环：一拍                                                      */
 /* ------------------------------------------------------------------------- */
 static void vel_tick(uint8_t joint)
@@ -76,8 +101,8 @@ static void vel_tick(uint8_t joint)
     return;                          /* 手动模式：脉宽由 0x31 说了算，闭环让开 */
   }
 
-  /* ---- ① 读角度。读不到就停转，别猜 ---- */
-  if (as5600_read_deg(&meas) == 0u)
+  /* ---- ① 读角度（已换算到机械坐标系）。读不到就停转，别猜 ---- */
+  if (base_read_deg(&meas) == 0u)
   {
     s_base_fault = 1u;
     us_stop = (c->us_stop != 0u) ? c->us_stop : SERVO_US_MID;
@@ -189,9 +214,9 @@ float arm_joint_get_deg(uint8_t joint)
 
   if (g_arm_joint[joint].kind == ARM_JOINT_VEL)
   {
-    if (as5600_read_deg(&d) != 0u)
+    if (base_read_deg(&d) != 0u)
     {
-      return d;                      /* 真实测量值 */
+      return d;                      /* 真实测量值（已是机械坐标系） */
     }
     return s_tgt_deg[joint];         /* 读不到：退回目标值，至少不返回垃圾 */
   }
@@ -245,7 +270,7 @@ void arm_joint_hold_position(void)
       float d = 0.0f;
 
       /* 把目标改成"我现在实际在哪"，闭环于是原地不动 */
-      if (as5600_read_deg(&d) != 0u)
+      if (base_read_deg(&d) != 0u)
       {
         s_tgt_deg[j] = d;
       }
