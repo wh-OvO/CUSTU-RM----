@@ -64,22 +64,40 @@ static float wrap180(float a)
 /*                                                                            */
 /* 这是**全工程唯一**该读 AS5600 的地方。别在别的文件里再直接调                */
 /* as5600_read_deg()，否则同一个角度会出现两种坐标系，调起来没完没了。         */
+/*                                                                            */
+/* 返回值和 g_arm_joint[ARM_JOINT_BASE].deg_min..deg_max 是**同一个坐标**：    */
+/*     home(90°) → 报 ≈90     行程下端点 → 报 ≈0     上端点 → 报 ≈180          */
+/* 所以 vel_tick() 里可以直接算 `s_tgt_deg[joint] - meas`，不需要再加减偏置。  */
 /* ------------------------------------------------------------------------- */
 static uint8_t base_read_deg(float *deg)
 {
-  float raw = 0.0f;
+  const arm_joint_cfg_t *c = &g_arm_joint[ARM_JOINT_BASE];
+  float raw    = 0.0f;
+  float center;
 
   if (as5600_read_deg(&raw) == 0u)
   {
     return 0u;                       /* 读失败：*deg 保持不动，调用方自己判断 */
   }
 
-  /* 机械角 = wrap180( SIGN × (原始角 − 零位偏置) )
+  /* 行程中点。J1 = (0 + 180) / 2 = 90，正好就是 deg_home。 */
+  center = 0.5f * ((float)c->deg_min + (float)c->deg_max);
+
+  /* 机械角 = wrap180( SIGN × (原始角 − ZERO) ) + CENTER
    *
-   *   减 ZERO   磁铁装在哪，AS5600 的零点就在哪，跟机械零位无关
-   *   乘 SIGN   磁铁装反 / 舵机反向时两者方向相反，不乘就变正反馈
-   *   绕 ±180   减完可能跑到 0~360 之外，绕回来才好算误差 */
-  *deg = wrap180(ARM_BASE_ENC_SIGN * (raw - ARM_BASE_ENC_ZERO_DEG));
+   *   减 ZERO    磁铁装在哪，AS5600 的零点就在哪，跟机械角度无关
+   *   乘 SIGN    磁铁装反 / 舵机反向时两者方向相反，不乘就变正反馈
+   *   绕 ±180    减完可能跑到 0~360 之外，绕回来才好算误差
+   *   + CENTER   ★ 把 0 从"行程中点"平移回"机械角 0"
+   *
+   * ★ 少了最后这个 + CENTER 会怎样（2026-11-12 修掉的坑）：
+   *   返回值变成"以行程中点为 0"，home 处报 0 而 s_tgt_deg[0] = 90，
+   *   误差恒定 90° → u 限到 300µs → 底座全速转出 90° 才停 → 顶死。
+   *
+   * ★ 反过来，如果绕的是 0 而不是 CENTER，机械行程 0~180 就骑在 ±180
+   *   接缝上：物理 180.4° 绕成 -179.6°，限位判据和 hold_position() 都会错。
+   *   这两件事一起解决，就靠下面这一行。 */
+  *deg = wrap180(ARM_BASE_ENC_SIGN * (raw - ARM_BASE_ENC_ZERO_DEG)) + center;
 
   return 1u;
 }
