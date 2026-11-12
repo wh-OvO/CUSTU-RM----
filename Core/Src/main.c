@@ -145,10 +145,17 @@ static const char *reset_cause_str(void)
 }
 
 /* ---------------- 启动横幅 ----------------
- * 打两次：① 上电时（此时 USB 可能还没枚举完，走 CDC 的那份会丢）
- *         ② USB 被电脑配置好之后补发一次（见 log_usb_poll）
- * 所以"复位原因"必须缓存：清标志发生在第一次打印之后，
- * 第二次再读就变成"未识别"了。
+ * 只在 t0_setup() 里调用一次：此时 MX_USART1_UART_Init() 已经跑过，
+ * 而 __HAL_RCC_CLEAR_RESET_FLAGS() 还没跑。
+ *
+ * ⚠️ 两条容易误会的点（改之前先读这里）：
+ *   1. 日志**只走 USART1，不走 USB CDC**。理由见文件头 92~96 行：
+ *      宁可看不见调试信息，也绝不能让日志字节混进协议字节流。
+ *      所以"USB 连上之后补发一遍横幅"这种行为**不存在** ——
+ *      插着 USB 线是看不见任何东西的，想看必须接串口（PA9，115200）。
+ *   2. 复位源标志只能读一次（读完就在 t0_setup 末尾清掉了），
+ *      所以缓存进 s_reset_cause。缓存 + "只在第一次真正读"的写法
+ *      让这个函数即使将来被调用两次也不会打出"未识别"。
  */
 static const char *s_reset_cause = NULL;
 
@@ -278,7 +285,9 @@ static void t0_loop(void)
   {
     led_on = (uint8_t)!led_on;
     HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, led_on ? GPIO_PIN_RESET : GPIO_PIN_SET);
-    printf("[T0] PB0 按下 -> LED %s\r\n", led_on ? "ON" : "OFF");
+    /* 脚名跟 main.h 的 KEY_GPIO_Port / KEY_Pin 走。
+     * 换板改引脚时，这行字符串里的 "PA0" 也要跟着改，不然日志会骗人。 */
+    printf("[T0] PA0 按下 -> LED %s\r\n", led_on ? "ON" : "OFF");
   }
 }
 
