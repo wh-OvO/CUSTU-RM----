@@ -249,6 +249,25 @@ int main(void)
     check(n == 1u && fr.type == PROTO_T_VERSION, "still decodes after random stream");
   }
 
+  /* ---------- 10. proto_build 参数校验 ---------- */
+  /* 这一段管的是"**拒绝**"：参数不对必须返回 0，绝不能越界写。
+   * 上面 1~9 测的是"正确输入给正确输出"，这里测的是"错误输入给安全结果"。
+   * 对嵌入式尤其重要：越界写不会崩溃，只会悄悄改掉旁边的变量。 */
+  printf("\n[10] proto_build argument validation\n");
+  {
+    uint8_t tight[6];                      /* 6 字节，装不下 15 字节的 0x20 帧 */
+
+    n = proto_build(tight, (uint16_t)sizeof tight, PROTO_T_TARGET, pl, PROTO_LEN_TARGET);
+    check(n == 0u, "buffer too small -> returns 0 (no overflow)");
+
+    n = proto_build(buf, (uint16_t)sizeof buf, PROTO_T_TARGET, pl,
+                    (uint8_t)(PROTO_MAX_PAYLOAD + 1u));
+    check(n == 0u, "payload length > 32 -> returns 0");
+
+    n = proto_build(buf, (uint16_t)sizeof buf, PROTO_T_VERSION, NULL, 0u);
+    check(n == 4u, "NULL payload with len 0 is allowed (SOF+type+len+crc)");
+  }
+
   /* ---------- 汇总 ---------- */
   printf("\n----------------------------------------\n");
   printf(" RESULT: %d passed, %d failed\n", g_pass, g_fail);
